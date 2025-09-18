@@ -128,25 +128,28 @@ const hrRequestPrompt =
 Invoice search list details \n
 
 { 
-"invoiceDetails" :
-                [{
-                "SAP__Origin": "SAP__Origin",
-                "CompanyCode": "CompanyCode",
-                "AccountingDocument": "AccountingDocument",
-                "FiscalYear": "yyyy",
-                "DocumentDate": "dd.mm.yyyy",
-                "PostingDate": "dd.mm.yyyy",
-                "FiscalPeriod": "mm",
-                "ReferenceDocument": "ReferenceDocument",
-                "DocumentStatus": "DocumentStatus",
-                "StatusText": "StatusText",
-                "DocuText": "DocuText",
-                "Currency": "Currency",
-                "Customer": "Customer",
-                "SalesOrder": "SalesOrder",
-                "Reference": "Reference"
-                }]
-} \n
+
+Example object for invoice details : it should return in ths example format only. rules
+remove any special symbols (*,_ etc) generate nice specified format only.
+Invoice 1:
+Invoice Number: "AccountingDocument" // 248013000
+Document Date: "DocumentDate" // 02.01.2024
+Posting Date: "PostingDate" // 02.01.2024
+Customer: "Customer" // A200007-00
+Currency: "Currency"//SGD
+Reference Document: "ReferenceDocument"//DA8012312B001176 
+}
+Invoice 2:
+Invoice Number: 248013000
+Document Date: 02.01.2024
+Posting Date: 02.01.2024
+Customer: A200007-00
+Currency: SGD
+Reference Document: DA8012312B001176 
+}
+...
+
+\n
 
 Rules: \n 
 1. Ask follow up questions if you need additional information from user to answer the question.\n 
@@ -266,8 +269,8 @@ module.exports = function () {
                 "invoice-request-query" : hrLeavePrompt,
                 "generic-query" : genericRequestPrompt
             }
-
             const chatRagResponse = await vectorplugin.getRagResponse(
+            // const chatRagResponse = await vectorplugin.getChatCompletionWithConfig(
                 user_query,
                 tableName,
                 embeddingColumn,

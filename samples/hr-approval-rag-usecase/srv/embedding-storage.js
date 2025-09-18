@@ -119,7 +119,8 @@ module.exports = function () {
       console.log("Generating the vector embeddings for the text chunks.");
       // For each text chunk generate the embeddings
       for (const chunk of textChunks) {
-        const embedding = await vectorplugin.getEmbedding(chunk.pageContent);
+        // TODO: 17-09 PRASAD const embedding = await vectorplugin.getEmbedding(chunk.pageContent);
+        const embedding = await vectorplugin.getEmbeddingWithConfig(chunk.pageContent);
         const entry = {
           "text_chunk": chunk.pageContent,
           "metadata_column": fileName,

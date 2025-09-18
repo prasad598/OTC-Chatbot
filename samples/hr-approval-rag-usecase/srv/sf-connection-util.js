@@ -7,11 +7,11 @@ AUTHORIZATION_HEADER = cds.env.requires["SUCCESS_FACTORS_CREDENTIALS"]["AUTHORIZ
 async function getUserInfoById(filterQuery){
     try {
         
-        const formattedURL= "/sap/opu/odata/sap/ZFI_OTC_CREDITNOTE_SRV;mo/GetInvoiceSearchResult?sap-client=888&"+filterQuery+"&SAP__Origin='AERO288'&$format=json";
+        const formattedURL= "/sap/opu/odata/sap/ZFI_OTC_CREDITNOTE_SRV;mo/GetInvoiceSearchResult?sap-client=888&"+filterQuery+"&SAP__Origin='AERO288'&skip=0&top=5&$format=json";
         console.log("STE-GPT-INFO formattedURL"+formattedURL);
         const response = await executeHttpRequest(
             {
-                destinationName: 'sthubsystem-qa'
+                destinationName: 'sthubsystem-qa-new'
             }, {
                 method: 'GET',
                 url: formattedURL,
