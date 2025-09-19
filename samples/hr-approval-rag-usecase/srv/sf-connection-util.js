@@ -5,12 +5,12 @@ AUTHORIZATION_HEADER = cds.env.requires["SUCCESS_FACTORS_CREDENTIALS"]["AUTHORIZ
 
 // Returns the download link for the provided invoice number
 async function getDownloadlink(invoiceNumber){
-    const formattedURL = "poutil/rest/File/download/OTC/DA8012303B000031/238013029.pdf";
+    const formattedURL = "/poutil/rest/File/download/OTC/DA8012303B000031/238013029.pdf";
     try {
         console.log("STE-GPT-INFO getDownloadlink formattedURL"+formattedURL+" invoiceNumber="+invoiceNumber);
         const response = await executeHttpRequest(
             {
-                destinationName: 'poqatu'
+                destinationName: 'sthubsystem-qa-new'
             }, {
                 method: 'GET',
                 url: formattedURL,
