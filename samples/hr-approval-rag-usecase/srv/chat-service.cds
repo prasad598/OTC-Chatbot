@@ -7,7 +7,25 @@ service ChatService @(requires: 'authenticated-user') {
         where: 'userID = $user'
     }])                 as projection on db.Conversation;
     entity Message          as projection on db.Message;
-    entity MessageFeedback  as projection on db.MessageFeedback;
+   entity MessageFeedBk      as projection on db.MessageFeedBk;
+
+        @readonly
+    entity CMF as
+    select from Message as M
+    left outer join MessageFeedBk       as F on M.mID = F.mID    // <-- note the .cID after the association
+    {
+      key M.mID         as mID,
+      key F.fID         as fID,
+      M.role,
+      M.content,
+      M.creation_time   as QUERY_AT,
+      F.consent_flag,
+      F.feedback_score,
+      F.feedback,
+      F.created_at      as FEEDBACK_AT,
+      F.created_by      as FEEDBACK_BY
+  };
+
 
     type RagResponse_AdditionalContents {
 
@@ -19,6 +37,7 @@ service ChatService @(requires: 'authenticated-user') {
         role               : String;
         content            : String;
         messageTime        : String;
+        messageId          : String;
         additionalContents : array of RagResponse_AdditionalContents;
     }
 

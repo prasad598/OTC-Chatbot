@@ -24,17 +24,15 @@ entity Message {
     creation_time: Timestamp;
 }
 
-entity MessageFeedback {
-
-    key feedback_id           : UUID not null;
-    @cds.persistence.name: 'MSG_ID'
-    message_id                : Association to Message;
-    satisfaction_score        : String(1);
-    satisfaction_score_reason : String(20);
-    followup_consent_flag     : String(1);
-    improvement_feedback      : LargeString;
-    created_at                : Timestamp;
-    created_by                : String(100);
+entity MessageFeedBk {
+    key fID: UUID not null @Core.Computed : true;
+    key mID: UUID not null;
+    consent_flag :String(1);
+    feedback_score: String(2);
+    feedback: LargeString;
+    created_at: Timestamp default $now
+                      @cds.on.insert : $now;
+    created_by : String;
 }
 
 entity DocumentChunk
