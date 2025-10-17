@@ -525,14 +525,13 @@ module.exports = function () {
 
             //handle memory after the RAG LLM call
             const responseTimestamp = new Date().toISOString();
-            const responseMessageId = await handleMemoryAfterRagCall (conversationId , responseTimestamp, chatRagResponse.completion, Message, Conversation);
+            await handleMemoryAfterRagCall (conversationId , responseTimestamp, chatRagResponse.completion, Message, Conversation);
 
             const response = {
                 "role" : chatRagResponse.completion.role,
                 "content" : chatRagResponse.completion.content,
                 "messageTime": responseTimestamp,
                 "additionalContents": chatRagResponse.additionalContents,
-                "mID": responseMessageId,
             };
 
             return response;
