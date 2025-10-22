@@ -3,6 +3,31 @@ const { executeHttpRequest } = require('@sap-cloud-sdk/http-client');
 
 AUTHORIZATION_HEADER = cds.env.requires["SUCCESS_FACTORS_CREDENTIALS"]["AUTHORIZATION_HEADER"]
 
+function extractXmlValue(xmlString, tagName) {
+    if (!xmlString) {
+        return "";
+    }
+    const text = typeof xmlString === "string" ? xmlString : xmlString?.toString?.() || "";
+    const regex = new RegExp(`<d:${tagName}>([\\s\\S]*?)<\\/d:${tagName}>`, 'i');
+    const match = regex.exec(text);
+    return match ? match[1].trim() : "";
+}
+
+function parsePdfStatusResponse(xmlPayload) {
+    const status = extractXmlValue(xmlPayload, "EStatus");
+    const message = extractXmlValue(xmlPayload, "EStatusMessage");
+    if (!status) {
+        return {
+            status: "E",
+            message: message || "Unable to process the validation response."
+        };
+    }
+    return {
+        status,
+        message
+    };
+}
+
 function normalizeDateToYyyymmdd(asOfDate) {
     if (!asOfDate && asOfDate !== 0) {
         return "";
@@ -228,6 +253,56 @@ async function getDownloadlink(invoiceNumber){
     return { downloadUrl: formattedURL };
 }
 
+async function validateInvoiceAvailability(invoiceNumber) {
+    const trimmedInvoice = (invoiceNumber || "").toString().trim();
+    if (!trimmedInvoice) {
+        return { status: "", message: "", companyCode: "", fiscalYear: "" };
+    }
+
+    if (trimmedInvoice.length < 6) {
+        return {
+            status: "E",
+            message: "Unable to derive the required details from the provided invoice number.",
+            companyCode: "",
+            fiscalYear: ""
+        };
+    }
+
+    const fiscalYearPrefix = trimmedInvoice.substring(1, 3);
+    const fiscalYear = `20${fiscalYearPrefix}`;
+    const companyCode = trimmedInvoice.substring(3, 6);
+    const docNumber = `${trimmedInvoice}`;
+
+    const formattedURL = `/sap/opu/odata/sap/ZFI_OTC_FORM_INVOICE_PDF_SRV/get_pdfstatusSet(IBlart='RI',ICompany='${companyCode}',IDocno='${docNumber}',IFiscalYear='${fiscalYear}',ISystemAlias='AERO288')`;
+
+    try {
+        const response = await executeHttpRequest(
+            {
+                destinationName: 'sthubsystem-qa-new'
+            }, {
+                method: 'GET',
+                url: formattedURL,
+                responseType: 'text'
+            }
+        );
+        const parsed = parsePdfStatusResponse(response?.data);
+        return {
+            status: parsed.status,
+            message: parsed.message,
+            companyCode,
+            fiscalYear
+        };
+    } catch (error) {
+        console.error("STE-GPT-ERROR validateInvoiceAvailability" + error);
+        return {
+            status: "E",
+            message: "Unable to validate the invoice number at this time. Please try again later.",
+            companyCode,
+            fiscalYear
+        };
+    }
+}
+
 async function getStatementOfAccountLink(companyCode, customerCode, asOfDate) {
     const trimmedCompanyCode = (companyCode || "").toString().trim();
     const trimmedCustomerCode = (customerCode || "").toString().trim();
@@ -254,6 +329,47 @@ async function getStatementOfAccountLink(companyCode, customerCode, asOfDate) {
     }
 
     return { downloadUrl: formattedURL, formattedDate };
+}
+
+async function validateStatementOfAccount(companyCode, customerCode, asOfDate) {
+    const trimmedCompanyCode = (companyCode || "").toString().trim();
+    const trimmedCustomerCode = (customerCode || "").toString().trim();
+    const formattedDate = normalizeDateToYyyymmdd(asOfDate);
+
+    if (!trimmedCompanyCode || !trimmedCustomerCode || !formattedDate) {
+        return {
+            status: "",
+            message: "",
+            formattedDate
+        };
+    }
+
+    const formattedURL = `/sap/opu/odata/sap/ZFI_AR_SOA_FORM_SRV/get_pdfstatusSet(ICompany='${trimmedCompanyCode}',ICustomer='${trimmedCustomerCode}',IOpendate='${formattedDate}',ISystemAlias='AERO288')`;
+
+    try {
+        const response = await executeHttpRequest(
+            {
+                destinationName: 'sthubsystem-qa-new'
+            }, {
+                method: 'GET',
+                url: formattedURL,
+                responseType: 'text'
+            }
+        );
+        const parsed = parsePdfStatusResponse(response?.data);
+        return {
+            status: parsed.status,
+            message: parsed.message,
+            formattedDate
+        };
+    } catch (error) {
+        console.error("STE-GPT-ERROR validateStatementOfAccount" + error);
+        return {
+            status: "E",
+            message: "Unable to validate the provided customer details at this time. Please try again later.",
+            formattedDate
+        };
+    }
 }
 
 
@@ -440,4 +556,4 @@ function timestampToString(timestamp) {
     return formattedString;
 }
 
-module.exports = { getCustomerDataFromDatasphere, getDownloadlink, getStatementOfAccountLink, getUserInfoById, getUserManagerId, getDirectReportsById, getEmployeeTime, getPeersVacationTimeByUserId };
+module.exports = { getCustomerDataFromDatasphere, getDownloadlink, getStatementOfAccountLink, getUserInfoById, getUserManagerId, getDirectReportsById, getEmployeeTime, getPeersVacationTimeByUserId, validateInvoiceAvailability, validateStatementOfAccount };

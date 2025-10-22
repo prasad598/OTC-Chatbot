@@ -286,11 +286,14 @@ const downloadRequestPrompt =
 Context includes:\n
 1. invoiceNumber\n
 2. downloadUrl\n
+3. EStatus\n
+4. EStatusMessage\n
 Rules:\n
 1. If invoiceNumber is empty ask the user to kindly provide the invoice number required for the download.\n
-2. When invoiceNumber is provided, respond using exactly the following XML structure with no additional text or punctuation:\n
+2. If EStatus equals 'E', respond using exactly the text in EStatusMessage with no additional commentary.\n
+3. When EStatus equals 'S' and downloadUrl is available, respond using exactly the following XML structure with no additional text or punctuation:\n
 <href>{invoiceNumber}</href>\n\n<href-value>{downloadUrl}</href-value>\n
-3. Keep the tone formal and concise.\n`;
+4. Keep the tone formal and concise.\n`;
 
 
 const soaRequestPrompt =
@@ -301,11 +304,14 @@ Context includes:\n
 3. asOfDate\n
 4. formattedDate\n
 5. downloadUrl\n
+6. EStatus\n
+7. EStatusMessage\n
 Rules:\n
 1. If any of companyCode, customerCode, or formattedDate is empty, politely ask the user to provide the missing information.\n
-2. When all required details are present and downloadUrl is available, respond using exactly the following XML structure with no additional text or punctuation:\n
+2. If EStatus equals 'E', respond using exactly the text in EStatusMessage with no additional commentary.\n
+3. When all required details are present, EStatus equals 'S', and downloadUrl is available, respond using exactly the following XML structure with no additional text or punctuation:\n
 <href>StatementOfAccount</href>\n\n<href-value>{downloadUrl}</href-value>\n
-3. Keep the tone formal and concise.\n`;
+4. Keep the tone formal and concise.\n`;
 
 
 const customerAnalyticsPrompt =
@@ -429,17 +435,26 @@ module.exports = function () {
                     }
                 }
 
+                let EStatus = "";
+                let EStatusMessage = "";
+                let downloadUrl = "";
+
                 if (invoiceNumber) {
-                    let downloadLinkResponse = await sf_connection_util.getDownloadlink(
+                    const precheckResponse = await sf_connection_util.validateInvoiceAvailability(
                         invoiceNumber
                     );
-                    const downloadUrl = downloadLinkResponse?.downloadUrl || downloadLinkResponse?.url || "";
-                    const downloadContext = { invoiceNumber, downloadUrl };
-                    promptResponses["download-invoice"] = downloadRequestPrompt + ` \`\`${JSON.stringify(downloadContext)}\`\` \n`;
-                } else {
-                    const downloadContext = { invoiceNumber: "", downloadUrl: "" };
-                    promptResponses["download-invoice"] = downloadRequestPrompt + ` \`\`${JSON.stringify(downloadContext)}\`\` \n`;
+                    EStatus = precheckResponse?.status || "";
+                    EStatusMessage = precheckResponse?.message || "";
+                    if (EStatus === "S") {
+                        const downloadLinkResponse = await sf_connection_util.getDownloadlink(
+                            invoiceNumber
+                        );
+                        downloadUrl = downloadLinkResponse?.downloadUrl || downloadLinkResponse?.url || "";
+                    }
                 }
+
+                const downloadContext = { invoiceNumber, downloadUrl, EStatus, EStatusMessage };
+                promptResponses["download-invoice"] = downloadRequestPrompt + ` \`\`${JSON.stringify(downloadContext)}\`\` \n`;
             }
 
             if (category === "soa-request")
@@ -447,17 +462,41 @@ module.exports = function () {
                 const companyCode = determinationJson?.companyCode ? `${determinationJson.companyCode}`.trim() : "";
                 const customerCode = determinationJson?.customerCode ? `${determinationJson.customerCode}`.trim() : "";
                 const asOfDate = determinationJson?.asOfDate ? `${determinationJson.asOfDate}`.trim() : "";
-                const soaLinkResponse = await sf_connection_util.getStatementOfAccountLink(
-                    companyCode,
-                    customerCode,
-                    asOfDate
-                );
+
+                let downloadUrl = "";
+                let formattedDate = "";
+                let EStatus = "";
+                let EStatusMessage = "";
+
+                if (companyCode && customerCode && asOfDate) {
+                    const precheckResponse = await sf_connection_util.validateStatementOfAccount(
+                        companyCode,
+                        customerCode,
+                        asOfDate
+                    );
+                    formattedDate = precheckResponse?.formattedDate || "";
+                    EStatus = precheckResponse?.status || "";
+                    EStatusMessage = precheckResponse?.message || "";
+
+                    if (EStatus === "S") {
+                        const soaLinkResponse = await sf_connection_util.getStatementOfAccountLink(
+                            companyCode,
+                            customerCode,
+                            asOfDate
+                        );
+                        formattedDate = soaLinkResponse?.formattedDate || formattedDate;
+                        downloadUrl = soaLinkResponse?.downloadUrl || "";
+                    }
+                }
+
                 const soaContext = {
                     companyCode,
                     customerCode,
                     asOfDate,
-                    formattedDate: soaLinkResponse?.formattedDate || "",
-                    downloadUrl: soaLinkResponse?.downloadUrl || ""
+                    formattedDate,
+                    downloadUrl,
+                    EStatus,
+                    EStatusMessage
                 };
                 promptResponses["soa-request"] = soaRequestPrompt + ` \`\`${JSON.stringify(soaContext)}\`\` \n`;
             }
