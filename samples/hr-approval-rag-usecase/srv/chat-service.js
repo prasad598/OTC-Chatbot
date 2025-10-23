@@ -89,7 +89,7 @@ c. if the user does not input exact dates and only mentions week, fill the dates
 
 3. If the category of the user question is "download-invoice",
 a. ensure invoice number is returned as 10 digit value. add leading zeros if required.
-b. if user input does not have an invoice number respond with invoiceNumber as empty string.
+b. if the user input includes any digits that could represent an invoice number, return those digits (even if fewer than ten) so the service can normalize them; only respond with an empty invoiceNumber when no digits are present.
 c. Treat common misspellings of the word invoice (for example: inovice, invioce, invice) as referring to invoices when interpreting the user request.
 
 
@@ -393,7 +393,9 @@ module.exports = function () {
             
             determinationPayload.push(...userQuestion);
             let payload = {
-                "messages": determinationPayload
+                "messages": determinationPayload,
+                "temperature": 0,
+                "top_p": 0
             };
 
             const determinationResponse = await vectorplugin.getChatCompletion(payload)
@@ -445,11 +447,15 @@ module.exports = function () {
 
             if (category === "download-invoice")
             {
-                const rawInvoiceNumber = determinationJson?.invoiceNumber;
-                let invoiceNumber = normalizeInvoiceNumber(rawInvoiceNumber);
-                if (!invoiceNumber) {
-                    const inferredInvoiceDigits = extractInvoiceNumberFromText(user_query);
-                    invoiceNumber = normalizeInvoiceNumber(inferredInvoiceDigits);
+                const inferredInvoiceDigits = extractInvoiceNumberFromText(user_query);
+                const inferredInvoiceNumber = normalizeInvoiceNumber(inferredInvoiceDigits);
+                const classifierInvoiceNumber = normalizeInvoiceNumber(determinationJson?.invoiceNumber);
+
+                let invoiceNumber = "";
+                if (inferredInvoiceNumber) {
+                    invoiceNumber = inferredInvoiceNumber;
+                } else if (classifierInvoiceNumber) {
+                    invoiceNumber = classifierInvoiceNumber;
                 }
 
                 let EStatus = "";
