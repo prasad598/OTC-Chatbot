@@ -13,18 +13,56 @@ function extractXmlValue(xmlString, tagName) {
     return match ? match[1].trim() : "";
 }
 
-function parsePdfStatusResponse(xmlPayload) {
-    const status = extractXmlValue(xmlPayload, "EStatus");
-    const message = extractXmlValue(xmlPayload, "EStatusMessage");
-    if (!status) {
+function parsePdfStatusResponse(rawPayload) {
+    let payload = rawPayload;
+
+    if (Buffer.isBuffer(payload)) {
+        payload = payload.toString("utf8");
+    }
+
+    const normalizeJsonPayload = (data) => {
+        const node = data?.d ?? data;
+        return {
+            status: node?.EStatus || node?.status || "",
+            message: node?.EStatusMessage || node?.message || ""
+        };
+    };
+
+    if (payload && typeof payload === "object") {
+        const { status, message } = normalizeJsonPayload(payload);
+        if (status) {
+            return { status, message };
+        }
+    }
+
+    if (typeof payload === "string") {
+        const trimmedPayload = payload.trim();
+        if (trimmedPayload.startsWith("{") || trimmedPayload.startsWith("[")) {
+            try {
+                const parsedJson = JSON.parse(trimmedPayload);
+                const { status, message } = normalizeJsonPayload(parsedJson);
+                if (status) {
+                    return { status, message };
+                }
+            } catch (error) {
+                cds?.log?.warn?.("Failed to parse invoice status JSON payload", error);
+            }
+        }
+
+        const status = extractXmlValue(trimmedPayload, "EStatus");
+        const message = extractXmlValue(trimmedPayload, "EStatusMessage");
+        if (status) {
+            return { status, message };
+        }
         return {
             status: "E",
             message: message || "Unable to process the validation response."
         };
     }
+
     return {
-        status,
-        message
+        status: "E",
+        message: "Unable to process the validation response."
     };
 }
 
