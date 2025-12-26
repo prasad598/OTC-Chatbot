@@ -593,6 +593,22 @@ async function extractIntentAndDeltas(req, { userText, currentState }) {
     fiscalYear = fiscalYear || yyyy;
   }
 
+  // 01–15 Jan (infer year from state or current year)
+  if (!dateFrom || !dateTo) {
+    const range1NoYear = text.match(
+      /\b(\d{1,2})\s*[-–]\s*(\d{1,2})\s*(jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\b/i
+    );
+    if (range1NoYear) {
+      const d1 = pad2local(range1NoYear[1]);
+      const d2 = pad2local(range1NoYear[2]);
+      const mm = monthMap[range1NoYear[3].toLowerCase()];
+      const yyyy = fiscalYear || state?.fiscalYear || String(new Date().getFullYear());
+      dateFrom = `${d1}.${mm}.${yyyy}`;
+      dateTo = `${d2}.${mm}.${yyyy}`;
+      fiscalYear = fiscalYear || yyyy;
+    }
+  }
+
   // 01.01.2024 to 15.01.2024
   if (!dateFrom || !dateTo) {
     const range2 = text.match(
