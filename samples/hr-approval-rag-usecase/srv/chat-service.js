@@ -521,6 +521,7 @@ function buildLegacyFilterQueryFromState(st) {
 
 function summarizeStateForUser(st) {
   const parts = [];
+  if (st.accountingDocument) parts.push(`Invoice Number ${st.accountingDocument}`);
   if (st.companyCode) parts.push(`Company Code ${st.companyCode}`);
   if (st.fiscalYear) parts.push(`Fiscal Year ${st.fiscalYear}`);
   if (st.dateFrom && st.dateTo) parts.push(`Date ${st.dateFrom} to ${st.dateTo}`);
@@ -611,6 +612,11 @@ async function extractIntentAndDeltas(req, { userText, currentState }) {
     /\bdownload\b|\bpdf\b/i.test(text) ? 'DOWNLOAD' :
     /\binvoice\b|\binvoices\b/i.test(text) || wantsOpen ? 'INVOICE' :
     'UNKNOWN';
+
+  const invoiceDigits = extractInvoiceNumberFromText(text);
+  const mentionsInvoice = /\binvoice\b|\binv\b/i.test(text);
+  const isDigitsOnly = /^\s*\d{6,12}\s*$/.test(text);
+  const accountingDocument = (mentionsInvoice || isDigitsOnly) && invoiceDigits ? invoiceDigits.trim() : '';
 
   // company code
   let companyCode = '';
@@ -704,6 +710,7 @@ async function extractIntentAndDeltas(req, { userText, currentState }) {
     dateFrom: dateFrom || state?.dateFrom || '',
     dateTo: dateTo || state?.dateTo || '',
     openItem,
+    accountingDocument,
     isNext: !!isNext
   };
 
@@ -723,6 +730,15 @@ function seedInvoiceStateFromDetermination(state, determinationJson, user_query)
 
   // companyCode
   if (!state.companyCode && dj.companyCode) state.companyCode = String(dj.companyCode).trim();
+
+  const invoiceNo =
+    dj.InvoiceNo ||
+    dj.invoiceNo ||
+    dj.accountingDocument ||
+    dj.AccountingDocument ||
+    dj.invoiceNumber ||
+    '';
+  if (!state.accountingDocument && invoiceNo) state.accountingDocument = String(invoiceNo).trim();
 
   // fiscalYear (if classifier provides)
   if (!state.fiscalYear && (dj.fiscalYear || dj.FiscalYear)) state.fiscalYear = String(dj.fiscalYear || dj.FiscalYear).trim();
@@ -837,7 +853,12 @@ state.intentLocked = true;
         const derived = deriveFromInvoiceNo(state.accountingDocument);
         if (!state.companyCode && derived.companyCode) state.companyCode = derived.companyCode;
         if (!state.fiscalYear && derived.fiscalYear) state.fiscalYear = derived.fiscalYear;
-        if (derived.accountingDocument) state.accountingDocument = derived.accountingDocument;
+      }
+
+      if (state.accountingDocument) {
+        state.dateFrom = '';
+        state.dateTo = '';
+        state.openItem = '';
       }
     }
 
@@ -851,7 +872,8 @@ state.intentLocked = true;
           fiscalYear: state.fiscalYear,
           dateFrom: state.dateFrom,
           dateTo: state.dateTo,
-          openItem: state.openItem
+          openItem: state.openItem,
+          accountingDocument: state.accountingDocument
         }
       });
     } catch (e) {
@@ -870,12 +892,28 @@ state.intentLocked = true;
     if (deltas.openItem === 'X' || deltas.openItem === '') state.openItem = deltas.openItem;
     if (deltas.dateFrom) state.dateFrom = normalizeDateToDdMmYyyy(deltas.dateFrom);
     if (deltas.dateTo) state.dateTo = normalizeDateToDdMmYyyy(deltas.dateTo);
+    if (deltas.accountingDocument) {
+      state.accountingDocument = String(deltas.accountingDocument).trim();
+      const derived = deriveFromInvoiceNo(state.accountingDocument);
+      if (!state.companyCode && derived.companyCode) state.companyCode = derived.companyCode;
+      if (!state.fiscalYear && derived.fiscalYear) state.fiscalYear = derived.fiscalYear;
+      state.dateFrom = '';
+      state.dateTo = '';
+      state.openItem = '';
+      state.skip = 0;
+      state.prompted = {};
+      state.totalCount = null;
+    }
 
     // 3) Pagination logic
-    const key = `FY=${state.fiscalYear}|CC=${state.companyCode}|DF=${state.dateFrom}|DT=${state.dateTo}|OPEN=${state.openItem}`;
+    const key = `FY=${state.fiscalYear}|CC=${state.companyCode}|DF=${state.dateFrom}|DT=${state.dateTo}|OPEN=${state.openItem}|INV=${state.accountingDocument}`;
     const keyChanged = state.lastKey && state.lastKey !== key;
+    const isInvoiceLookup = !!state.accountingDocument;
 
-    if (keyChanged) {
+    if (isInvoiceLookup) {
+      state.skip = 0;
+      state.prompted = {};
+    } else if (keyChanged) {
       state.skip = 0;
       state.prompted = {};
     } else if (wantsNext || deltas.isNext) {
@@ -893,7 +931,9 @@ state.intentLocked = true;
     const missing = [];
     if (!state.companyCode) missing.push('Company Code (e.g., 801)');
     if (!state.fiscalYear) missing.push('Fiscal Year (e.g., 2024)');
-    if (!state.dateFrom || !state.dateTo) missing.push('Date range (e.g., 01.01.2024 to 31.01.2024)');
+    if (!state.accountingDocument && (!state.dateFrom || !state.dateTo)) {
+      missing.push('Date range (e.g., 01.01.2024 to 31.01.2024)');
+    }
 
     invoiceSessionState.set(conversationId, state);
 
@@ -912,13 +952,31 @@ state.intentLocked = true;
 
     // 5) Call OTC: top=5 only, with skip (safe)
     const legacyFilterQuery = buildLegacyFilterQueryFromState(state);
+    const isInvoiceLookup = !!state.accountingDocument;
 
-    const apiResult = await sf_connection_util.getInvoicesFromOtc(legacyFilterQuery, user_query, {
+    let apiResult = await sf_connection_util.getInvoicesFromOtc(legacyFilterQuery, user_query, {
       top: PAGE_SIZE,
       skip: state.skip,
-      wantCount: true,
+      wantCount: !isInvoiceLookup,
       timeoutMs: 30000
     });
+
+    if (isInvoiceLookup && !apiResult?.items?.length) {
+      const rawInvoiceNo = String(state.accountingDocument || '');
+      const noLeading = rawInvoiceNo.replace(/^0+/, '');
+      if (noLeading && noLeading !== rawInvoiceNo) {
+        const retryFilterQuery = buildLegacyFilterQueryFromState({
+          ...state,
+          accountingDocument: noLeading
+        });
+        apiResult = await sf_connection_util.getInvoicesFromOtc(retryFilterQuery, user_query, {
+          top: PAGE_SIZE,
+          skip: 0,
+          wantCount: false,
+          timeoutMs: 30000
+        });
+      }
+    }
 
     const items = Array.isArray(apiResult?.items) ? apiResult.items : [];
     const totalCount = Number.isFinite(apiResult?.totalCount) ? apiResult.totalCount : items.length;

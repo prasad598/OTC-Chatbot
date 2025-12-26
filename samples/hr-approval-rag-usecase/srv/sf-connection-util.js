@@ -178,7 +178,6 @@ function parseLegacyInvoiceQuery(filterQuery) {
     if (!/^\d{4}$/.test(result.FiscalYear || '') && derived.fiscalYear) {
       result.FiscalYear = derived.fiscalYear;
     }
-    if (derived.accountingDocument) result.AccountingDocument = derived.accountingDocument;
   }
 
   return result;
