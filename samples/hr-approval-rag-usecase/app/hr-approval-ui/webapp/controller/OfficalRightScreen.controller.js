@@ -88,7 +88,7 @@ sap.ui.define([
 
         loadConversationHistory(conversationID) {
 
-            const url = this.getBaseURL() + `/odata/v4/chat/Conversation(${conversationID})/to_messages`;
+            const url = this.getBaseURL() + `/odata/v4/AIEngineService/Conversation(${conversationID})/to_messages`;
             var oModel = new JSONModel();
             oModel.loadData(url);
             oModel.dataLoaded()
@@ -139,6 +139,7 @@ sap.ui.define([
                 message_time: chatModel.getProperty("/message_time"),
                 user_id: chatModel.getProperty("/user_id"),
                 user_query: chatModel.getProperty("/user_query"),
+                appId: "OTC-CHATBOT" 
             });
 
             this.sendMessage(payload)

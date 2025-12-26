@@ -2,9 +2,11 @@ _schema-version: "3.1"
 ID: hr-approval-rag-usecase
 description: A simple CAP project.
 version: 1.0.0
+
 parameters:
   deploy_mode: html5-repo
   enable-parallel-deployments: true
+
 build-parameters:
   before-all:
     - builder: custom
@@ -12,15 +14,18 @@ build-parameters:
         - npx cds build --production
 
 modules:
-# --------------------- SERVER MODULE -------------------------
+  # --------------------- SERVER MODULE -------------------------
   - name: hr-approval-rag-usecase-srv
-# -------------------------------------------------------------
+    # -----------------------------------------------------------
     type: nodejs
     path: gen/srv
     requires:
       - name: hr-approval-rag-usecase-auth
       - name: hr-approval-rag-usecase-db
       - name: hr-approval-rag-usecase-destination-service
+      - name: hr-approval-rag-usecase-connectivity
+      # NOTE: AI Core is now handled by the separate AI Engine project,
+      # so we do NOT bind default_aicore here anymore.
     provides:
       - name: srv-api
         properties:
@@ -37,9 +42,9 @@ modules:
         - node_modules/
         - default-env.json
 
-# -------------------- DB MODULE ------------------------------
+  # -------------------- DB MODULE ------------------------------
   - name: hr-approval-rag-usecase-db-deployer
-# -------------------------------------------------------------
+    # -----------------------------------------------------------
     type: hdb
     path: gen/db
     requires:
@@ -50,9 +55,9 @@ modules:
       ignore:
         - node_modules/
 
-# ------------------ DESTINATION CONTENT ----------------------
+  # ------------------ DESTINATION CONTENT ----------------------
   - name: hr-approval-rag-usecase-destination-content
-# ------------------------------------------------------------
+    # -----------------------------------------------------------
     type: com.sap.application.content
     requires:
       - name: hr-approval-rag-usecase-destination-service
@@ -83,9 +88,9 @@ modules:
     build-parameters:
       no-source: true
 
-# ------------------ APPLICATION CONTENT ----------------------
+  # ------------------ APPLICATION CONTENT ----------------------
   - name: hr-approval-rag-usecase-app-content
-# -------------------------------------------------------------
+    # -----------------------------------------------------------
     type: com.sap.application.content
     path: .
     requires:
@@ -100,9 +105,9 @@ modules:
           name: hrapprovalui
           target-path: resources/
 
-# ------------- APPLICATION: UI5 -------------------------
+  # ----------------- APPLICATION: UI5 --------------------------
   - name: hrapprovalui
-# ------------------------------------------------------------
+    # -----------------------------------------------------------
     type: html5
     path: app/hr-approval-ui
     build-parameters:
@@ -111,12 +116,11 @@ modules:
       commands:
         - npm install
         - npm run build:cf
-      supported-platforms:
-        []
+      supported-platforms: []
 
-# ------------------ App Router -------------------------------  
+  # ------------------ App Router -------------------------------
   - name: hr-approval-rag-usecase-approuter
-# -------------------------------------------------------------
+    # -----------------------------------------------------------
     type: approuter.nodejs
     path: app/
     parameters:
@@ -125,22 +129,22 @@ modules:
       memory: 256M
     build-parameters:
       ignore:
-      - .env
-      - node_modules/
-      - default-env.json
+        - .env
+        - node_modules/
+        - default-env.json
     requires:
       - name: srv-api
         group: destinations
         properties:
-          name: srv-api # must be used in xs-app.json as well
+          name: srv-api          # must be used in xs-app.json as well
           url: ~{srv-url}
           forwardAuthToken: true
       - name: hr-approval-rag-usecase-auth
 
 resources:
-# ------------------------------------------------------------
+  # -------------------- XSUAA ----------------------------------
   - name: hr-approval-rag-usecase-auth
-# ------------------------------------------------------------
+    # -----------------------------------------------------------
     type: org.cloudfoundry.managed-service
     parameters:
       path: ./xs-security.json
@@ -150,24 +154,27 @@ resources:
       config:
         tenant-mode: dedicated
         xsappname: hr-approval-rag-usecase
-# ------------------------------------------------------------
+
+  # -------------------- HANA HDI -------------------------------
   - name: hr-approval-rag-usecase-db
-# ------------------------------------------------------------
+    # -----------------------------------------------------------
     type: com.sap.xs.hdi-container
     parameters:
       service: hana
       service-plan: hdi-shared
-# ------------------------------------------------------------
+
+  # ---------------- HTML5 Repo Host ----------------------------
   - name: hr-approval-rag-usecase-repo-host
-# ------------------------------------------------------------
+    # -----------------------------------------------------------
     type: org.cloudfoundry.managed-service
     parameters:
       service: html5-apps-repo
       service-name: hr-approval-rag-usecase-html5-app-host-service
       service-plan: app-host
-# ------------------------------------------------------------
+
+  # ---------------- Destination Service ------------------------
   - name: hr-approval-rag-usecase-destination-service
-# ------------------------------------------------------------
+    # -----------------------------------------------------------
     type: org.cloudfoundry.managed-service
     requires:
       - name: srv-api
@@ -180,7 +187,7 @@ resources:
               - Authentication: NoAuthentication
                 HTML5.DynamicDestination: true
                 HTML5.ForwardAuthToken: true
-                HTML5.Timeout: 30000
+                HTML5.Timeout: 180000
                 Name: hr-approval-rag-usecase-srv
                 ProxyType: Internet
                 Type: HTTP
@@ -195,3 +202,12 @@ resources:
       service: destination
       service-name: hr-approval-rag-usecase-destination-service
       service-plan: lite
+
+  # ---------------- Connectivity Service (NEW) ------------------
+  - name: hr-approval-rag-usecase-connectivity
+    # -----------------------------------------------------------
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: connectivity
+      service-plan: lite
+      service-name: hr-approval-rag-usecase-connectivity

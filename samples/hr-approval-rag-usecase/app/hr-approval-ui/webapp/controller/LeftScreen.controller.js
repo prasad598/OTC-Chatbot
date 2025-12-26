@@ -24,10 +24,19 @@ sap.ui.define([
             this.oRouter.getRoute("conversation").attachPatternMatched(this.onRouteMatched, this);
         },
 
-        onRouteMatched(oEvent){
-            
-            this.getView().byId("leftScreenChatList").getBinding("items").refresh();
-        },
+       onRouteMatched(oEvent) {
+    const oList = this.byId("leftScreenChatList");
+    if (!oList) {
+        return;
+    }
+
+    // Try to refresh the items binding if it exists
+    const oBinding = oList.getBinding("items");
+    if (oBinding && typeof oBinding.refresh === "function") {
+        oBinding.refresh();
+    }
+},
+
 
         onConversationPress: function(oEvent){
     
@@ -82,7 +91,7 @@ sap.ui.define([
         requestConversationDelete: function (conversationID) {
             
             const settings = {
-                url: this.getBaseURL() + `/odata/v4/chat/Conversation(${conversationID})`,
+                url: this.getBaseURL() + `/odata/v4/AIEngineService/Conversation(${conversationID})`,
                 method: "DELETE",
                 headers: {
                     "Content-type": "application/json"
@@ -158,6 +167,7 @@ sap.ui.define([
                 mediaType: item.getMediaType(),
                 fileName: item.getFileName(),
                 size: item.getFileObject().size.toString(),
+                appId: "OTC-CHATBOT" 
             };
             const settings = {
                 url: this.getBaseURL() + "/odata/v4/embedding-storage/Files",
@@ -305,6 +315,7 @@ sap.ui.define([
 
             const payload = JSON.stringify({
                 uuid: pdfFileID.toString(),
+                appId: "OTC-CHATBOT" 
             });
 
             return new Promise((resolve, reject) => {

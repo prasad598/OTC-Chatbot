@@ -11,9 +11,17 @@
       "cacheControl": "no-cache, no-store, must-revalidate"
     },
     {
+      "source": "^/odata/v4/AIEngineService/(.*)$",
+      "target": "/odata/v4/AIEngineService/$1",
+      "destination": "AI_ENGINE_DEST",
+      "authenticationType": "xsuaa",
+      "csrfProtection": false,
+      "cacheControl": "no-cache, no-store, must-revalidate"
+    },
+    {
       "source": "^/odata/v4/embedding-storage/(.*)$",
       "target": "/odata/v4/embedding-storage/$1",
-      "destination": "hr-approval-rag-usecase-srv",
+      "destination": "AI_ENGINE_DEST",
       "authenticationType": "xsuaa",
       "csrfProtection": false,
       "cacheControl": "no-cache, no-store, must-revalidate"

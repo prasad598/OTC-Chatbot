@@ -1,46 +1,28 @@
-using {sap.tisce.demo as db} from '../db/schema';
-
 service ChatService @(requires: 'authenticated-user') {
 
-    entity Conversation @(restrict: [{
-        grant: ['READ','WRITE', 'DELETE'],
-        where: 'userID = $user'
-    }])                 as projection on db.Conversation;
-    entity Message          as projection on db.Message;
-   entity MessageFeedBk      as projection on db.MessageFeedBk;
+action getConversationHistoryFromEngine(conversationId : String)
+  returns { historyJson : String; };
 
-        @readonly
-    entity CMF as
-    select from Message as M
-    left outer join MessageFeedBk       as F on M.mID = F.mID    // <-- note the .cID after the association
-    {
-      key M.mID         as mID,
-      key F.fID         as fID,
-      M.role,
-      M.content,
-      M.creation_time   as QUERY_AT,
-      F.consent_flag,
-      F.feedback_score,
-      F.feedback,
-      F.created_at      as FEEDBACK_AT,
-      F.created_by      as FEEDBACK_BY
-  };
+  // Flat response type – only primitive fields (no complex/array)
+  type RagResponse {
+    role               : String;
+    content            : String;
+    messageTime        : String;   // ISO timestamp as string
+    messageId          : String;
+    additionalContents : String;   // JSON string (e.g. "[]" or "[{...}]")
+  }
 
+  // Main chat entrypoint used by your UI
+  action getChatRagResponse(
+    conversationId : String,
+    messageId      : String,
+    message_time   : Timestamp,
+    user_id        : String,
+    user_query     : String,
+    appId          : String
+  ) returns RagResponse;
 
-    type RagResponse_AdditionalContents {
-
-        score       : String;
-        pageContent : String;
-    }
-
-    type RagResponse {
-        role               : String;
-        content            : String;
-        messageTime        : String;
-        messageId          : String;
-        additionalContents : array of RagResponse_AdditionalContents;
-    }
-
-    action   getChatRagResponse(conversationId : String, messageId : String, message_time : Timestamp, user_id : String, user_query : String) returns RagResponse;
-    function deleteChatData() returns String;
+  // Kept for backward compatibility – implementation can call
+  // AIEngineService.deleteAllChatData or deleteChatDataForConversation
+  function deleteChatData() returns String;
 }

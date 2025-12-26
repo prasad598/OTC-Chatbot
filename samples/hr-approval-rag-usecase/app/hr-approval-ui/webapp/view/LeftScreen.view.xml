@@ -45,7 +45,7 @@
                     noDataText="No chat history available"
                     enableBusyIndicator="true"
                     items="{
-                            path:'/Conversation',
+                            path:'/aiEngine>/Conversation',
                             sorter:{
                                 path:'last_update_time',
                                 descending: true
@@ -58,8 +58,8 @@
                     <m:StandardListItem
                         id="_IDGenStandardListItem1"
                         type="Navigation"
-                        title="{= ${title}.length > 0 ? ${title} : 'Local Testing'}"
-                        description="{userID} | {creation_time}"
+                        title="{= ${aiEngine>title}.length > 0 ? ${aiEngine>title} : 'Local Testing'}"
+                        description="{aiEngine>userID} | {aiEngine>creation_time}"
                     />
                 </m:List>
             </m:ScrollContainer>
