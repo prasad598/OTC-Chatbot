@@ -159,12 +159,14 @@ function parseLegacyInvoiceQuery(filterQuery) {
   const companyCode = pick('CompanyCode');
   const dateFrom = pick('DateFrom');
   const dateTo = pick('DateTo');
+  const openItem = pick('OpenItem');
 
   if (invoiceNo) result.AccountingDocument = invoiceNo;
   if (fiscalYear) result.FiscalYear = fiscalYear;
   if (companyCode) result.CompanyCode = companyCode;
   if (dateFrom) result.DateFrom = dateFrom;
   if (dateTo) result.DateTo = dateTo;
+  if (openItem) result.OpenItem = openItem;
 
   // Fix wrong/missing FY/CC derived from invoice number
   if (result.AccountingDocument) {
@@ -186,6 +188,8 @@ function buildOtcInvoiceUrl({
   AccountingDocument,
   FiscalYear,
   CompanyCode,
+  DateFrom,
+  DateTo,
   OpenItem,
   top,
   skip,
@@ -196,6 +200,8 @@ function buildOtcInvoiceUrl({
   if (AccountingDocument) params.push(`AccountingDocument=${encodeURIComponent(AccountingDocument)}`);
   if (FiscalYear) params.push(`FiscalYear=${encodeURIComponent(FiscalYear)}`);
   if (CompanyCode) params.push(`CompanyCode=${encodeURIComponent(CompanyCode)}`);
+  if (DateFrom) params.push(`DateFrom=${encodeURIComponent(DateFrom)}`);
+  if (DateTo) params.push(`DateTo=${encodeURIComponent(DateTo)}`);
 
   params.push(`ISystemAlias=${encodeURIComponent(OTC_SYSTEM_ALIAS)}`);
 
