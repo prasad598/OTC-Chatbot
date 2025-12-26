@@ -350,6 +350,7 @@ function shouldRouteToInvoiceFollowUp({ existingState, user_query, classifiedCat
 // -----------------------------------------------------------------------------
 const PAGE_SIZE = 5;
 const REFINE_THRESHOLD = 50;
+const BROAD_RANGE_DAYS = 15;
 
 // In-memory session store (per app instance). If you need persistence across restarts,
 // later you can store this in DB keyed by conversationId.
@@ -434,6 +435,56 @@ function normalizeDateToDdMmYyyy(val) {
 function toNumberOrNull(x) {
   const n = parseInt(String(x), 10);
   return Number.isFinite(n) ? n : null;
+}
+
+function parseDdMmYyyyToDate(value) {
+  const s = String(value || '').trim();
+  const match = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec(s);
+  if (!match) return null;
+  const [, dd, mm, yyyy] = match;
+  const date = new Date(Number(yyyy), Number(mm) - 1, Number(dd));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function isBroadDateRange(dateFrom, dateTo) {
+  const start = parseDdMmYyyyToDate(dateFrom);
+  const end = parseDdMmYyyyToDate(dateTo);
+  if (!start || !end) return false;
+  const diffMs = end.getTime() - start.getTime();
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24)) + 1;
+  return diffDays > BROAD_RANGE_DAYS;
+}
+
+function buildInvoiceFollowUps(state, totalCount) {
+  const questions = [];
+  const prompted = state.prompted || {};
+  state.prompted = prompted;
+
+  const push = (key, text) => {
+    if (!prompted[key]) {
+      questions.push(text);
+      prompted[key] = true;
+    }
+  };
+
+  if (!state.dateFrom || !state.dateTo) {
+    push('dateRange', 'What date range do you want (e.g., 01–15 Jan 2024)?');
+  } else if (isBroadDateRange(state.dateFrom, state.dateTo) && totalCount > REFINE_THRESHOLD) {
+    push('narrowDateRange', 'Can you narrow down the date range further (e.g., 01–07 Jan 2024)?');
+  }
+
+  if (!state.openItem) {
+    push('openItem', 'Do you want OPEN items only or ALL invoices?');
+  }
+
+  if (!state.accountingDocument) {
+    push(
+      'identifiers',
+      'Do you have an Invoice Number / Reference Document / Customer Code to filter?'
+    );
+  }
+
+  return questions;
 }
 
 // Extract FY + Company from invoice number pattern you shared
@@ -743,6 +794,7 @@ const categoryHandlers = {
       skip: 0,
       pageSize: PAGE_SIZE,
       lastKey: '',
+      prompted: {},
       lastTouched: nowMs(),
       totalCount: null
     };
@@ -825,6 +877,7 @@ state.intentLocked = true;
 
     if (keyChanged) {
       state.skip = 0;
+      state.prompted = {};
     } else if (wantsNext || deltas.isNext) {
       state.skip = Math.max(0, (toNumberOrNull(state.skip) || 0) + PAGE_SIZE);
     } else {
@@ -834,6 +887,7 @@ state.intentLocked = true;
 
     state.lastKey = key;
     state.lastTouched = nowMs();
+    state.prompted = state.prompted || {};
 
     // 4) Validate minimum filters (now should work correctly)
     const missing = [];
@@ -904,12 +958,17 @@ state.intentLocked = true;
 
     let footer = '';
     if (needsRefine) {
-      footer =
-        `Here are some follow-up questions to help narrow down your search:\n` +
-        `1. Can you narrow down by a smaller date range (e.g., 01–15 Jan 2024)?\n` +
-        `2. Do you have an Invoice Number / Reference Document / Customer Code to filter?\n` +
-        `3. Do you want OPEN items only or ALL invoices?\n` +
-        (hasMore ? `\nIf you still want to continue, reply "next" to see the next ${PAGE_SIZE}.\n` : '');
+      const followUps = buildInvoiceFollowUps(state, totalCount);
+      if (followUps.length) {
+        footer =
+          `Here are some follow-up questions to help narrow down your search:\n` +
+          followUps.map((q, idx) => `${idx + 1}. ${q}`).join('\n') +
+          (hasMore ? `\n\nIf you still want to continue, reply "next" to see the next ${PAGE_SIZE}.\n` : '');
+      } else if (hasMore) {
+        footer = `Would you like to see the next ${PAGE_SIZE} invoices? (Reply: "next")\n`;
+      } else {
+        footer = `End of results for the current criteria.\n`;
+      }
     } else if (hasMore) {
       footer = `Would you like to see the next ${PAGE_SIZE} invoices? (Reply: "next")\n`;
     } else {
