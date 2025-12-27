@@ -1,9 +1,17 @@
 'use strict';
 
 const cds = require('@sap/cds');
+const { DELETE, SELECT } = cds.ql;
 
 const sf_connection_util = require('./sf-connection-util');
-const { normalizeInvoiceNumber, extractInvoiceNumberFromText } = require('./chat-utils');
+const {
+  normalizeInvoiceNumber,
+  extractInvoiceNumberFromText
+} = require('./chat-utils');
+const {
+  handleMemoryBeforeRagCall,
+  handleMemoryAfterRagCall
+} = require('./memory-helper');
 
 const PROJECT_NAME = 'HR_APPROVAL_RAG_USECASE';
 
@@ -19,7 +27,7 @@ const systemPrompt = `Your task is to classify the user question into either of 
  with the following format:
  {
     "category" : "invoice-request-query"
-    "query: "InvoiceNo='AccountingDocument'&InvoiceType='FI'&FiscalYear='year of invoice posting date'&DateFrom='fromDate'&DateTo='toDate'&SalesOrder=''&CompanyCode='companyCode'"
+    "query: "AccountingDocument='AccountingDocument'&FiscalYear='year of invoice posting date'&DateFrom='fromDate'&DateTo='toDate'&CompanyCode='companyCode'"
  }
 
  If the user wants to download, print or get a link for an invoice provide the response as json
@@ -81,7 +89,7 @@ EXAMPLE2:
 user input: Can get invoices between January 1 to January 10 and company code 898?
 response:  {
     "category" : "invoice-request-query"
-    "query: "InvoiceNo=''&InvoiceType='FI'&FiscalYear='2024'&DateFrom='01.01.2024'&DateTo='10.01.2024'&SalesOrder=''&CompanyCode='898'"
+    "query: "AccountingDocument=''&FiscalYear='2024'&DateFrom='01.01.2024'&DateTo='10.01.2024'&CompanyCode='898'"
 }
 
 EXAMPLE3:
@@ -89,7 +97,7 @@ EXAMPLE3:
 user input:  Can I get invoices posted in in March 2024for company code 801 ?
 response:  {
     "category" : "invoice-request-query"
-    "query: "InvoiceNo=''&InvoiceType='FI'&FiscalYear='2024'&DateFrom='01.03.2024'&DateTo='31.03.2024'&SalesOrder=''&CompanyCode='801'"
+    "query: "AccountingDocument=''&FiscalYear='2024'&DateFrom='01.03.2024'&DateTo='31.03.2024'&CompanyCode='801'"
  }
 
 EXAMPLE4:
@@ -99,7 +107,7 @@ user input:  Can I get invoices posted or created this week ?
 If user provides company code as 803 then
 response:  {
     "category" : "invoice-request-query"
-    "query: "InvoiceNo=''&InvoiceType='FI'&FiscalYear='2024'&DateFrom='17.04.2024'&DateTo='24.04.2024'&SalesOrder=''&CompanyCode='803'"
+    "query: "AccountingDocument=''&FiscalYear='2024'&DateFrom='17.04.2024'&DateTo='24.04.2024'&CompanyCode='803'"
  }
 
 Rules: 
@@ -110,7 +118,7 @@ Rules:
  user input:  Can I get invoices posted or created this year under 808 comapny code?
  response:  {
      "category" : "invoice-request-query"
-     "query: "InvoiceNo=''&InvoiceType='FI'&FiscalYear='2024'&DateFrom='01.01.2024'&DateTo='31.12.2024'&SalesOrder=''&CompanyCode='808'"
+     "query: "AccountingDocument=''&FiscalYear='2024'&DateFrom='01.01.2024'&DateTo='31.12.2024'&CompanyCode='808'"
     }
 
 Rules: 
@@ -124,10 +132,11 @@ ask for follow up question on company code and feed user input company code in q
 Rules: 
 1. Ask follow up questions for company code  
 if the user proivdes 898 
+2.If current year is 2024 , previous year will be 2023
 
 response:  {
     "category" : "invoice-request-query"
-    "query: "InvoiceNo=''&InvoiceType='FI'&FiscalYear='2023'&DateFrom='01.01.2023'&DateTo='31.12.2023'&SalesOrder=''&CompanyCode='898'"
+    "query: "AccountingDocument=''&FiscalYear='2023'&DateFrom='01.01.2023'&DateTo='31.12.2023'&CompanyCode='898'"
 }
 
 EXAMPLE8:
@@ -135,12 +144,23 @@ EXAMPLE8:
 user input:  Can I get invoice details for invoice 248013075?
 response:  {
     "category" : "invoice-request-query"
-    "query: "InvoiceNo='0248013075'&InvoiceType='FI'&FiscalYear='2024'&DateFrom=''&DateTo=''&SalesOrder=''&CompanyCode='801'"
+    "query: "AccountingDocument='0248013075'&FiscalYear='2024'&DateFrom=''&DateTo=''&CompanyCode='801'"
 }
 Rules: 
 1. Ask follow up questions if you need additional  
 2. make InvoiceNo as 10 digit example in this case 0248013075 
 3. in this invoiceNo , year will be 24 ( first two chars) which is 2024, company code wil be 801 (char 3 + char 4 +char 5) 
+
+EXAMPLE8.1:
+
+user input:  Can I get invoice details for invoice 0248013075?
+response:  {
+    "category" : "invoice-request-query"
+    "query: "AccountingDocument='0248013075'&FiscalYear='2024'&DateFrom=''&DateTo=''&CompanyCode='801'"
+}
+
+Rules:
+1. Even if user gives InvoiceNo with 0s appending ex:0248013075, dont reply as in valid format.Invoice number inputted by user can be either 0248013075 or 248013075 or 00248013075 i.e it can have any number of appending 0s.
 
 EXAMPLE9:
 user input: Can get invoice search policy ?
@@ -212,19 +232,36 @@ Invoice search list details
 Example object for invoice details : it should return in ths example format only. rules
 remove any special symbols (*,_ etc) generate nice specified format only.
 Invoice 1:
-Invoice Number: "AccountingDocument" // 248013000
-Document Date: "DocumentDate" // 02.01.2024
-Posting Date: "PostingDate" // 02.01.2024
-Customer: "Customer" // A200007-00
-Currency: "Currency"//SGD
-Reference Document: "ReferenceDocument"//DA8012312B001176 
+Invoice Number: "invoiceNumber" // 248013000
+Document Date: "documentDate" // 02.01.2024
+Posting Date: "postingDate" // 02.01.2024
+Customer: "customerCode" // A200007-00
+Customer Name: "customerName" // PUBLIC UTILITIES BOARD
+Currency: "currency"//SGD
+Due Date: "dueDate" // 02.01.2024
+Invoice Amount: "invoiceAmount" "currency"// 1000.00 SGD
+Invoice Status: "invoiceStatus" // NOTCLEARED
+Clear Status: "clearStatus" // NOTCLEARED
+Invoice Clearing Date: "clearingDate" // 02.01.2024
+Open Amount: "openAmount" "currency" // 1000.00 SGD
+Cleared Amount: "clearedAmount" "currency" // 1000.00 SGD
+Reference Document: "referenceDocument"// DA8012312B001176 
 }
+
 Invoice 2:
 Invoice Number: 248013000
 Document Date: 02.01.2024
 Posting Date: 02.01.2024
 Customer: A200007-00
+Customer Name: PUBLIC UTILITIES BOARD
 Currency: SGD
+Due Date: 02.01.2024
+Invoice Amount: 1000.00 SGD
+Invoice Status: NOTCLEARED
+Clear Status: NOTCLEARED
+Invoice Clearing Date: 02.01.2024
+Open Amount: 1000.00 SGD
+Cleared Amount: 1000.00 SGD
 Reference Document: DA8012312B001176 
 }
 ...
@@ -292,803 +329,113 @@ const basePrompts = {
   'soa-request': soaRequestPrompt
 };
 
-// -----------------------------------------------------------------------------
-// Intent Lock / Follow-up Router helpers (NEW)
-// -----------------------------------------------------------------------------
-function detectInvoiceFollowUpDelta(text = '') {
-  const t = String(text || '').toLowerCase().trim();
 
-  // pagination / navigation
-  if (/^(next|more|show more|continue|next page)$/i.test(t)) return { type: 'next' };
-  if (/^(prev|previous|back)$/i.test(t)) return { type: 'prev' };
-
-  // open / all / cleared
-  if (/(open items only|open only|only open|show open|open invoices)/i.test(t)) return { type: 'openOnly' };
-  if (/(all items|all invoices|show all|include cleared|open and cleared)/i.test(t)) return { type: 'allItems' };
-  if (/(cleared only|only cleared|show cleared)/i.test(t)) return { type: 'clearedOnly' }; // optional
-
-  // reset
-  if (/(start over|reset|clear filters)/i.test(t)) return { type: 'reset' };
-
-  // refine hints (often follow-ups)
-  if (/(company code|cc\b|fiscal year|fy\b|from|to|between|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i.test(t)) {
-    return { type: 'refine' };
-  }
-
-  // invoice number typed alone
-  if (/^\d{6,12}$/.test(t)) return { type: 'invoiceNumberOnly' };
-
-  return null;
-}
-
-/**
- * Decide whether we should FORCE route to invoice handler
- * even if classifier returns generic-query.
- */
-function shouldRouteToInvoiceFollowUp({ existingState, user_query, classifiedCategory }) {
-  if (!existingState) return false;
-
-  // must be in an active invoice flow
-  if (existingState.activeIntent !== 'INVOICE' || existingState.intentLocked !== true) return false;
-
-  // if user explicitly reset -> allow invoice handler to clear session
-  const delta = detectInvoiceFollowUpDelta(user_query);
-  if (delta) return true;
-
-  // If classifier already says invoice, fine (we will route anyway)
-  if (classifiedCategory === 'invoice-request-query') return true;
-
-  // Generic but short follow-up phrases should still stay in invoice flow
-  const t = String(user_query || '').trim();
-  if (t.length <= 25) return true; // "open only", "next", "801", etc.
-
-  return false;
-}
-
-// -----------------------------------------------------------------------------
-// Option A: deterministic invoice list workflow with session state
-// -----------------------------------------------------------------------------
-const PAGE_SIZE = 5;
-const REFINE_THRESHOLD = 50;
-const BROAD_RANGE_DAYS = 15;
-
-// In-memory session store (per app instance). If you need persistence across restarts,
-// later you can store this in DB keyed by conversationId.
-const invoiceSessionState = new Map(); // conversationId -> state
-const SESSION_TTL_MS = 30 * 60 * 1000; // 30 mins
-
-function nowMs() {
-  return Date.now();
-}
-
-function cleanupInvoiceSessions() {
-  const t = nowMs();
-  for (const [cid, st] of invoiceSessionState.entries()) {
-    if (!st?.lastTouched || (t - st.lastTouched) > SESSION_TTL_MS) {
-      invoiceSessionState.delete(cid);
-    }
-  }
-}
-
-function userWantsNextPage(text) {
-  const q = (text || '').toLowerCase().trim();
-  return (
-    q === 'next' ||
-    q === 'more' ||
-    q.includes('next ') ||
-    q.includes('show next') ||
-    q.includes('next page') ||
-    q.includes('continue')
-  );
-}
-
-function userWantsReset(text) {
-  const q = (text || '').toLowerCase();
-  return q.includes('start over') || q.includes('reset') || q.includes('clear filters');
-}
-
-function pad2(n) {
-  const s = String(n);
-  return s.length === 1 ? `0${s}` : s;
-}
-
-// Accepts: YYYYMMDD, YYYY-MM-DD, DD.MM.YYYY, DD/MM/YYYY, Date string
-// Returns: DD.MM.YYYY (for UI display)
-function formatDateForDisplay(val) {
-  if (!val && val !== 0) return '';
-  const s = String(val).trim();
-  if (!s) return '';
-
-  // YYYYMMDD
-  if (/^\d{8}$/.test(s)) {
-    const yyyy = s.slice(0, 4);
-    const mm = s.slice(4, 6);
-    const dd = s.slice(6, 8);
-    return `${dd}.${mm}.${yyyy}`;
-  }
-
-  // YYYY-MM-DD or YYYY/MM/DD or YYYY.MM.DD
-  if (/^\d{4}[-/.]\d{2}[-/.]\d{2}$/.test(s)) {
-    const [yyyy, mm, dd] = s.split(/[-/.]/);
-    return `${dd}.${mm}.${yyyy}`;
-  }
-
-  // DD-MM-YYYY or DD/MM/YYYY or DD.MM.YYYY
-  if (/^\d{2}[-/.]\d{2}[-/.]\d{4}$/.test(s)) {
-    const [dd, mm, yyyy] = s.split(/[-/.]/);
-    return `${dd}.${mm}.${yyyy}`;
-  }
-
-  const d = new Date(s);
-  if (!isNaN(d.getTime())) {
-    return `${pad2(d.getDate())}.${pad2(d.getMonth() + 1)}.${d.getFullYear()}`;
-  }
-
-  return s;
-}
-
-// Returns: DD.MM.YYYY (for API query format used in your classifier examples)
-function normalizeDateToDdMmYyyy(val) {
-  return formatDateForDisplay(val);
-}
-
-function toNumberOrNull(x) {
-  const n = parseInt(String(x), 10);
-  return Number.isFinite(n) ? n : null;
-}
-
-function parseDdMmYyyyToDate(value) {
-  const s = String(value || '').trim();
-  const match = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec(s);
-  if (!match) return null;
-  const [, dd, mm, yyyy] = match;
-  const date = new Date(Number(yyyy), Number(mm) - 1, Number(dd));
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function isBroadDateRange(dateFrom, dateTo) {
-  const start = parseDdMmYyyyToDate(dateFrom);
-  const end = parseDdMmYyyyToDate(dateTo);
-  if (!start || !end) return false;
-  const diffMs = end.getTime() - start.getTime();
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24)) + 1;
-  return diffDays > BROAD_RANGE_DAYS;
-}
-
-function buildInvoiceFollowUps(state, totalCount) {
-  const questions = [];
-  const prompted = state.prompted || {};
-  state.prompted = prompted;
-
-  const push = (key, text) => {
-    if (!prompted[key]) {
-      questions.push(text);
-      prompted[key] = true;
-    }
-  };
-
-  if (!state.dateFrom || !state.dateTo) {
-    push('dateRange', 'What date range do you want (e.g., 01–15 Jan 2024)?');
-  } else if (isBroadDateRange(state.dateFrom, state.dateTo) && totalCount > REFINE_THRESHOLD) {
-    push('narrowDateRange', 'Can you narrow down the date range further (e.g., 01–07 Jan 2024)?');
-  }
-
-  if (!state.openItem) {
-    push('openItem', 'Do you want OPEN items only or ALL invoices?');
-  }
-
-  if (!state.accountingDocument) {
-    push(
-      'identifiers',
-      'Do you have an Invoice Number / Reference Document / Customer Code to filter?'
-    );
-  }
-
-  return questions;
-}
-
-// Extract FY + Company from invoice number pattern you shared
-function deriveFromInvoiceNo(invoiceNoRaw) {
-  const digits = (invoiceNoRaw || '').toString().trim().replace(/\D/g, '');
-  if (!digits) return { fiscalYear: '', companyCode: '', accountingDocument: '' };
-
-  if (digits.length === 9) {
-    const fy = `20${digits.slice(0, 2)}`;
-    const cc = digits.slice(2, 5);
-    return { fiscalYear: fy, companyCode: cc, accountingDocument: digits };
-  }
-
-  if (digits.length === 10 && digits.startsWith('0')) {
-    const fy = `20${digits.slice(1, 3)}`;
-    const cc = digits.slice(3, 6);
-    const doc = digits.replace(/^0+/, '') || digits;
-    return { fiscalYear: fy, companyCode: cc, accountingDocument: doc };
-  }
-
-  return { fiscalYear: '', companyCode: '', accountingDocument: digits };
-}
-
-function buildLegacyFilterQueryFromState(st) {
-  const invNo = st.accountingDocument ? String(st.accountingDocument) : '';
-  const fy = st.fiscalYear ? String(st.fiscalYear) : '';
-  const df = st.dateFrom ? String(st.dateFrom) : '';
-  const dt = st.dateTo ? String(st.dateTo) : '';
-  const cc = st.companyCode ? String(st.companyCode) : '';
-  const open = st.openItem === 'X' ? "OpenItem='X'&" : '';
-
-  return `InvoiceNo='${invNo}'&InvoiceType='FI'&FiscalYear='${fy}'&DateFrom='${df}'&DateTo='${dt}'&SalesOrder=''&${open}CompanyCode='${cc}'`;
-}
-
-function summarizeStateForUser(st) {
-  const parts = [];
-  if (st.accountingDocument) parts.push(`Invoice Number ${st.accountingDocument}`);
-  if (st.companyCode) parts.push(`Company Code ${st.companyCode}`);
-  if (st.fiscalYear) parts.push(`Fiscal Year ${st.fiscalYear}`);
-  if (st.dateFrom && st.dateTo) parts.push(`Date ${st.dateFrom} to ${st.dateTo}`);
-  if (st.openItem === 'X') parts.push('OPEN items only');
-  return parts.length ? parts.join(', ') : 'no filters';
-}
-
-function formatAmount(val) {
-  if (val === null || val === undefined || val === '') return '';
-  const n = Number(val);
-  if (!Number.isFinite(n)) return String(val);
-  return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
-// Make invoice block similar to your screenshot
-function formatInvoiceBlock(inv) {
-  const invoiceNumber =
-    inv.InvoiceNumber || inv.invoiceNumber || inv.AccountingDocument || inv.accountingDocument || '';
-  const documentDate = formatDateForDisplay(inv.DocumentDate || inv.documentDate || inv.BLDAT || inv.bldat || '');
-  const postingDate = formatDateForDisplay(inv.PostingDate || inv.postingDate || inv.BUDAT || inv.budat || '');
-  const invoiceDate = formatDateForDisplay(inv.InvoiceDate || inv.invoiceDate || inv.Invoice_Date || '');
-  const dueDate = formatDateForDisplay(inv.DueDate || inv.dueDate || inv.NETDT || inv.netdt || '');
-  const customer = inv.Customer || inv.customerName || inv.CustomerName || inv.customer || '';
-  const currency = inv.Currency || inv.currency || inv.WAERS || inv.waers || '';
-  const invoiceAmount = formatAmount(inv.InvoiceAmount || inv.invoiceAmount || inv.Amount || inv.amount || inv.WRBTR || inv.wrbtr || '');
-  const openAmount = formatAmount(inv.OpenAmount || inv.openAmount || inv.Open_Amt || inv.openAmt || '');
-  const clearedAmount = formatAmount(inv.ClearedAmount || inv.clearedAmount || inv.Cleared_Amt || inv.clearedAmt || '');
-  const status = inv.InvoiceStatus || inv.invoiceStatus || inv.Status || inv.clearStatus || '';
-  const reference = inv.ReferenceDocument || inv.referenceDocument || inv.XBLNR || inv.xblnr || inv.Reference || '';
-
-  const lines = [];
-  if (invoiceNumber) lines.push(`Invoice Number: ${invoiceNumber}`);
-  if (documentDate) lines.push(`Document Date: ${documentDate}`);
-  if (postingDate) lines.push(`Posting Date: ${postingDate}`);
-  if (invoiceDate) lines.push(`Invoice Date: ${invoiceDate}`);
-  if (dueDate) lines.push(`Due Date: ${dueDate}`);
-  if (customer) lines.push(`Customer: ${customer}`);
-  if (currency) lines.push(`Currency: ${currency}`);
-  if (invoiceAmount) lines.push(`Invoice Amount: ${invoiceAmount}`);
-  if (openAmount) lines.push(`Open Amount: ${openAmount}`);
-  if (clearedAmount) lines.push(`Cleared Amount: ${clearedAmount}`);
-  if (status) lines.push(`Invoice Status: ${status}`);
-  if (reference) lines.push(`Reference Document: ${reference}`);
-
-  return lines.join('\n');
-}
-
-// -----------------------------------------------------------------------------
-// LOCAL intent + deltas extraction (NO AI engine call)
-// Returns: { intent: 'INVOICE'|'SOA'|'DOWNLOAD'|'UNKNOWN', deltas: {...} }
-// -----------------------------------------------------------------------------
-async function extractIntentAndDeltas(req, { userText, currentState }) {
-  const text = (userText || '').toString().trim();
-  const state = currentState || {};
-
-  const monthMap = {
-    jan: '01', january: '01',
-    feb: '02', february: '02',
-    mar: '03', march: '03',
-    apr: '04', april: '04',
-    may: '05',
-    jun: '06', june: '06',
-    jul: '07', july: '07',
-    aug: '08', august: '08',
-    sep: '09', sept: '09', september: '09',
-    oct: '10', october: '10',
-    nov: '11', november: '11',
-    dec: '12', december: '12'
-  };
-
-  const pad2local = (n) => String(n).padStart(2, '0');
-
-  const isNext =
-    /\b(next|more|show\s*more|next\s*\d+)\b/i.test(text) ||
-    /\bcontinue\b/i.test(text);
-
-  const wantsOpen =
-    /\bopen\s*items?\b/i.test(text) ||
-    /\bonly\s+open\b/i.test(text);
-
-  const wantsAll =
-    /\ball\b/i.test(text) ||
-    /\binclude\s+cleared\b/i.test(text) ||
-    /\bopen\s+and\s+cleared\b/i.test(text);
-
-  const intent =
-    /\bstatement\s+of\s+account\b|\bsoa\b/i.test(text) ? 'SOA' :
-    /\bdownload\b|\bpdf\b/i.test(text) ? 'DOWNLOAD' :
-    /\binvoice\b|\binvoices\b/i.test(text) || wantsOpen ? 'INVOICE' :
-    'UNKNOWN';
-
-  const invoiceDigits = extractInvoiceNumberFromText(text);
-  const mentionsInvoice = /\binvoice\b|\binv\b/i.test(text);
-  const isDigitsOnly = /^\s*\d{6,12}\s*$/.test(text);
-  const accountingDocument = (mentionsInvoice || isDigitsOnly) && invoiceDigits ? invoiceDigits.trim() : '';
-
-  // company code
-  let companyCode = '';
-  const ccMatch =
-    text.match(/\bcompany\s*code\s*[:=]?\s*(\d{3})\b/i) ||
-    text.match(/\bcc\s*[:=]?\s*(\d{3})\b/i);
-  if (ccMatch) companyCode = ccMatch[1];
-
-  // fiscal year
-  let fiscalYear = '';
-  const fyMatch =
-    text.match(/\b(fy|fiscal\s*year)\s*[:=]?\s*(20\d{2})\b/i) ||
-    text.match(/\b(20\d{2})\b/);
-  if (fyMatch) fiscalYear = fyMatch[2] || fyMatch[1] || '';
-
-  // date range
-  let dateFrom = '';
-  let dateTo = '';
-
-  // 01–15 Jan 2024
-  const range1 = text.match(
-    /\b(\d{1,2})\s*[-–]\s*(\d{1,2})\s*(jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\s*(20\d{2})\b/i
-  );
-  if (range1) {
-    const d1 = pad2local(range1[1]);
-    const d2 = pad2local(range1[2]);
-    const mm = monthMap[range1[3].toLowerCase()];
-    const yyyy = range1[4];
-    dateFrom = `${d1}.${mm}.${yyyy}`;
-    dateTo = `${d2}.${mm}.${yyyy}`;
-    fiscalYear = fiscalYear || yyyy;
-  }
-
-  // 01–15 Jan (infer year from state or current year)
-  if (!dateFrom || !dateTo) {
-    const range1NoYear = text.match(
-      /\b(\d{1,2})\s*[-–]\s*(\d{1,2})\s*(jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\b/i
-    );
-    if (range1NoYear) {
-      const d1 = pad2local(range1NoYear[1]);
-      const d2 = pad2local(range1NoYear[2]);
-      const mm = monthMap[range1NoYear[3].toLowerCase()];
-      const yyyy = fiscalYear || state?.fiscalYear || String(new Date().getFullYear());
-      dateFrom = `${d1}.${mm}.${yyyy}`;
-      dateTo = `${d2}.${mm}.${yyyy}`;
-      fiscalYear = fiscalYear || yyyy;
-    }
-  }
-
-  // 01.01.2024 to 15.01.2024
-  if (!dateFrom || !dateTo) {
-    const range2 = text.match(
-      /\b(\d{1,2})[./-](\d{1,2})[./-](20\d{2})\s*(to|[-–])\s*(\d{1,2})[./-](\d{1,2})[./-](20\d{2})\b/i
-    );
-    if (range2) {
-      const d1 = pad2local(range2[1]);
-      const m1 = pad2local(range2[2]);
-      const y1 = range2[3];
-      const d2 = pad2local(range2[5]);
-      const m2 = pad2local(range2[6]);
-      const y2 = range2[7];
-      dateFrom = `${d1}.${m1}.${y1}`;
-      dateTo = `${d2}.${m2}.${y2}`;
-      fiscalYear = fiscalYear || y1;
-    }
-  }
-
-  // January 2024
-  if (!dateFrom || !dateTo) {
-    const m = text.match(
-      /\b(jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\s*(20\d{2})\b/i
-    );
-    if (m) {
-      const mm = monthMap[m[1].toLowerCase()];
-      const yyyy = m[2];
-      const lastDay = new Date(Number(yyyy), Number(mm), 0).getDate();
-      dateFrom = `01.${mm}.${yyyy}`;
-      dateTo = `${pad2local(lastDay)}.${mm}.${yyyy}`;
-      fiscalYear = fiscalYear || yyyy;
-    }
-  }
-
-  // open item merge
-  let openItem = state?.openItem || '';
-  if (wantsOpen) openItem = 'X';
-  if (wantsAll) openItem = '';
-
-  const deltas = {
-    companyCode: companyCode || state?.companyCode || '',
-    fiscalYear: fiscalYear || state?.fiscalYear || '',
-    dateFrom: dateFrom || state?.dateFrom || '',
-    dateTo: dateTo || state?.dateTo || '',
-    openItem,
-    accountingDocument,
-    isNext: !!isNext
-  };
-
-  console.log('STE-GPT-CTX-DELTAS', {
-    intent,
-    deltas,
-    sample: text.slice(0, 140)
-  });
-
-  return { intent, deltas };
-}
-
-// Helper: seed state from classifier JSON (NEW fix)
-function seedInvoiceStateFromDetermination(state, determinationJson, user_query) {
-  const dj = determinationJson || {};
-  const uq = (user_query || '').toString();
-
-  // companyCode
-  if (!state.companyCode && dj.companyCode) state.companyCode = String(dj.companyCode).trim();
-
-  const invoiceNo =
-    dj.InvoiceNo ||
-    dj.invoiceNo ||
-    dj.accountingDocument ||
-    dj.AccountingDocument ||
-    dj.invoiceNumber ||
-    '';
-  if (!state.accountingDocument && invoiceNo) state.accountingDocument = String(invoiceNo).trim();
-
-  // fiscalYear (if classifier provides)
-  if (!state.fiscalYear && (dj.fiscalYear || dj.FiscalYear)) state.fiscalYear = String(dj.fiscalYear || dj.FiscalYear).trim();
-
-  // openItem (if classifier provides)
-  if (dj.openItem === 'X' || dj.openItem === '') state.openItem = dj.openItem;
-
-  // dateRange patterns from classifier (ex: "January 2024")
-  if ((!state.dateFrom || !state.dateTo) && dj.dateRange) {
-    const s = String(dj.dateRange).trim();
-    // reuse extractor on dateRange text so it becomes dateFrom/dateTo
-    // (no async required here, quick parse using the same extractor logic pattern)
-    const m = s.match(/\b(jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\s*(20\d{2})\b/i);
-    if (m) {
-      const monthMap = {
-        jan: '01', january: '01', feb: '02', february: '02', mar: '03', march: '03',
-        apr: '04', april: '04', may: '05', jun: '06', june: '06', jul: '07', july: '07',
-        aug: '08', august: '08', sep: '09', sept: '09', september: '09', oct: '10', october: '10',
-        nov: '11', november: '11', dec: '12', december: '12'
-      };
-      const mm = monthMap[m[1].toLowerCase()];
-      const yyyy = m[2];
-      const lastDay = new Date(Number(yyyy), Number(mm), 0).getDate();
-      state.dateFrom = `01.${mm}.${yyyy}`;
-      state.dateTo = `${pad2(lastDay)}.${mm}.${yyyy}`;
-      state.fiscalYear = state.fiscalYear || yyyy;
-    }
-  }
-
-  // explicit dateFrom/dateTo if classifier gives
-  if (!state.dateFrom && dj.dateFrom) state.dateFrom = normalizeDateToDdMmYyyy(dj.dateFrom);
-  if (!state.dateTo && dj.dateTo) state.dateTo = normalizeDateToDdMmYyyy(dj.dateTo);
-
-  // also allow user query to drive OPEN item seeding on first turn
-  if (!state.openItem && /\bopen\s*items?\b/i.test(uq)) state.openItem = 'X';
-}
-
-// -----------------------------------------------------------------------------
-// CATEGORY HANDLERS
-// -----------------------------------------------------------------------------
+// ---------------- CATEGORY HANDLERS (project-specific logic) ----------------
 const categoryHandlers = {
-  // ---------------------------------------------------------------------------
-  // INVOICE SEARCH (Option A: deterministic output + stateful follow ups)
-  // ---------------------------------------------------------------------------
-  'invoice-request-query': async ({ req, conversationId, user_query, determinationJson }) => {
-    cleanupInvoiceSessions();
-
-    if (userWantsReset(user_query)) {
-      invoiceSessionState.delete(conversationId);
-    }
-
-    const existing = invoiceSessionState.get(conversationId) || null;
-    const wantsNext = userWantsNextPage(user_query);
-
-    // 1) Start / restore state
-  let state = existing
-  ? { ...existing }
-  : {
-      // NEW: intent lock fields
-      activeIntent: 'INVOICE',
-      intentLocked: true,
-
-      companyCode: '',
-      fiscalYear: '',
-      dateFrom: '',
-      dateTo: '',
-      openItem: '',
-      accountingDocument: '',
-      skip: 0,
-      pageSize: PAGE_SIZE,
-      lastKey: '',
-      prompted: {},
-      lastTouched: nowMs(),
-      totalCount: null
-    };
-
-// If session existed from older version, ensure lock is present
-state.activeIntent = 'INVOICE';
-state.intentLocked = true;
-
-
-    // ✅ NEW: seed from classifier output even if it doesn't provide "query"
-    if (!existing) {
-      seedInvoiceStateFromDetermination(state, determinationJson, user_query);
-
-      // If classifier returned legacy query, still support it
-      const filterQuery = determinationJson?.query || '';
-      if (filterQuery) {
-        const pick = (name) => {
-          const re = new RegExp(`${name}\\s*=\\s*'([^']*)'`, 'i');
-          const m = re.exec(filterQuery);
-          return m ? (m[1] || '').trim() : '';
-        };
-
-        const invNo = pick('InvoiceNo');
-        const fy = pick('FiscalYear');
-        const cc = pick('CompanyCode');
-        const df = pick('DateFrom');
-        const dt = pick('DateTo');
-        const open = pick('OpenItem');
-
-        if (invNo) state.accountingDocument = invNo;
-        if (fy) state.fiscalYear = fy;
-        if (cc) state.companyCode = cc;
-        if (df) state.dateFrom = normalizeDateToDdMmYyyy(df);
-        if (dt) state.dateTo = normalizeDateToDdMmYyyy(dt);
-        if (open === 'X') state.openItem = 'X';
-      }
-
-      // derive FY/CC from invoice if present
-      if (state.accountingDocument) {
-        const derived = deriveFromInvoiceNo(state.accountingDocument);
-        if (!state.companyCode && derived.companyCode) state.companyCode = derived.companyCode;
-        if (!state.fiscalYear && derived.fiscalYear) state.fiscalYear = derived.fiscalYear;
-      }
-
-      if (state.accountingDocument) {
-        state.dateFrom = '';
-        state.dateTo = '';
-        state.openItem = '';
-      }
-    }
-
-    // 2) Apply follow-up deltas (LOCAL extractor)
-    let intentResult;
-    try {
-      intentResult = await extractIntentAndDeltas(req, {
-        userText: user_query,
-        currentState: {
-          companyCode: state.companyCode,
-          fiscalYear: state.fiscalYear,
-          dateFrom: state.dateFrom,
-          dateTo: state.dateTo,
-          openItem: state.openItem,
-          accountingDocument: state.accountingDocument
-        }
-      });
-    } catch (e) {
-      console.warn('STE-GPT-WARN extractIntentAndDeltas failed', e?.message || e);
-      intentResult = { intent: 'UNKNOWN', deltas: {} };
-    }
-
-    const deltas =
-      intentResult?.deltas && typeof intentResult.deltas === 'object'
-        ? intentResult.deltas
-        : {};
-
-    // Merge deltas
-    if (deltas.companyCode) state.companyCode = String(deltas.companyCode).trim();
-    if (deltas.fiscalYear) state.fiscalYear = String(deltas.fiscalYear).trim();
-    if (deltas.openItem === 'X' || deltas.openItem === '') state.openItem = deltas.openItem;
-    if (deltas.dateFrom) state.dateFrom = normalizeDateToDdMmYyyy(deltas.dateFrom);
-    if (deltas.dateTo) state.dateTo = normalizeDateToDdMmYyyy(deltas.dateTo);
-    if (deltas.accountingDocument) {
-      state.accountingDocument = String(deltas.accountingDocument).trim();
-      const derived = deriveFromInvoiceNo(state.accountingDocument);
-      if (!state.companyCode && derived.companyCode) state.companyCode = derived.companyCode;
-      if (!state.fiscalYear && derived.fiscalYear) state.fiscalYear = derived.fiscalYear;
-      state.dateFrom = '';
-      state.dateTo = '';
-      state.openItem = '';
-      state.skip = 0;
-      state.prompted = {};
-      state.totalCount = null;
-    }
-
-    // 3) Pagination logic
-    const key = `FY=${state.fiscalYear}|CC=${state.companyCode}|DF=${state.dateFrom}|DT=${state.dateTo}|OPEN=${state.openItem}|INV=${state.accountingDocument}`;
-    const keyChanged = state.lastKey && state.lastKey !== key;
-    const isInvoiceLookup = !!state.accountingDocument;
-
-    if (isInvoiceLookup) {
-      state.skip = 0;
-      state.prompted = {};
-    } else if (keyChanged) {
-      state.skip = 0;
-      state.prompted = {};
-    } else if (wantsNext || deltas.isNext) {
-      state.skip = Math.max(0, (toNumberOrNull(state.skip) || 0) + PAGE_SIZE);
-    } else {
-      // keep current skip
-      state.skip = Math.max(0, toNumberOrNull(state.skip) || 0);
-    }
-
-    state.lastKey = key;
-    state.lastTouched = nowMs();
-    state.prompted = state.prompted || {};
-
-    // 4) Validate minimum filters (now should work correctly)
-    const missing = [];
-    if (!state.companyCode) missing.push('Company Code (e.g., 801)');
-    if (!state.fiscalYear) missing.push('Fiscal Year (e.g., 2024)');
-    if (!state.accountingDocument && (!state.dateFrom || !state.dateTo)) {
-      missing.push('Date range (e.g., 01.01.2024 to 31.01.2024)');
-    }
-
-    invoiceSessionState.set(conversationId, state);
-
-    if (missing.length > 0) {
-      return {
-        deterministic: {
-          role: 'assistant',
-          content:
-            `I can help with that, but I need the following details:\n` +
-            missing.map((m) => `- ${m}`).join('\n') +
-            `\n\nCurrent context: ${summarizeStateForUser(state)}.`,
-          additionalContents: []
-        }
-      };
-    }
-
-    // 5) Call OTC: top=5 only, with skip (safe)
-    const legacyFilterQuery = buildLegacyFilterQueryFromState(state);
-
-    let apiResult = await sf_connection_util.getInvoicesFromOtc(legacyFilterQuery, user_query, {
-      top: PAGE_SIZE,
-      skip: state.skip,
-      wantCount: !isInvoiceLookup,
-      timeoutMs: 30000
-    });
-
-    if (isInvoiceLookup && !apiResult?.items?.length) {
-      const rawInvoiceNo = String(state.accountingDocument || '');
-      const noLeading = rawInvoiceNo.replace(/^0+/, '');
-      if (noLeading && noLeading !== rawInvoiceNo) {
-        const retryFilterQuery = buildLegacyFilterQueryFromState({
-          ...state,
-          accountingDocument: noLeading
-        });
-        apiResult = await sf_connection_util.getInvoicesFromOtc(retryFilterQuery, user_query, {
-          top: PAGE_SIZE,
-          skip: 0,
-          wantCount: false,
-          timeoutMs: 30000
-        });
-      }
-    }
-
-    const items = Array.isArray(apiResult?.items) ? apiResult.items : [];
-    const totalCount = isInvoiceLookup
-      ? items.length
-      : Number.isFinite(apiResult?.totalCount)
-        ? apiResult.totalCount
-        : 0;
-    const returnedCount = items.length;
-
-    state.totalCount = totalCount;
-    invoiceSessionState.set(conversationId, state);
-
-    console.log('STE-GPT-INVOICE_SESSION', {
-      conversationId,
-      key,
-      skip: state.skip,
-      totalCount,
-      returnedCount,
-      apiUrl: apiResult?.url || apiResult?.debug?.url || ''
-    });
-
-    // 6) Format response
-    if (!items.length) {
-      const msg =
-        `No invoices were found for the current criteria: ${summarizeStateForUser(state)}.\n\n` +
-        `Try a smaller date range, or provide Invoice Number / Reference Document / Customer Code.`;
-      return {
-        deterministic: { role: 'assistant', content: msg, additionalContents: [] }
-      };
-    }
-
-    const needsRefine = totalCount > REFINE_THRESHOLD;
-    const shownSoFar = Math.min(totalCount, state.skip + returnedCount);
-    const hasMore = shownSoFar < totalCount;
-
-    let header = `Found ${totalCount} invoices. Showing ${returnedCount}.\n`;
-    if (state.openItem === 'X') header = `Found ${totalCount} OPEN invoices. Showing ${returnedCount}.\n`;
-    if (needsRefine) header += `Result set is large, please refine.\n\n`;
-
-    const blocks = items.map((inv, idx) => `${state.skip + idx + 1}. ${formatInvoiceBlock(inv)}`);
-
-    let footer = '';
-    if (needsRefine) {
-      const followUps = buildInvoiceFollowUps(state, totalCount);
-      if (followUps.length) {
-        footer =
-          `Here are some follow-up questions to help narrow down your search:\n` +
-          followUps.map((q, idx) => `${idx + 1}. ${q}`).join('\n') +
-          (hasMore ? `\n\nIf you still want to continue, reply "next" to see the next ${PAGE_SIZE}.\n` : '');
-      } else if (hasMore) {
-        footer = `Would you like to see the next ${PAGE_SIZE} invoices? (Reply: "next")\n`;
-      } else {
-        footer = `End of results for the current criteria.\n`;
-      }
-    } else if (hasMore) {
-      footer = `Would you like to see the next ${PAGE_SIZE} invoices? (Reply: "next")\n`;
-    } else {
-      footer = `End of results for the current criteria.\n`;
-    }
+  // 1) INVOICE SEARCH
+  'invoice-request-query': async ({ determinationJson, basePrompt }) => {
+    const filterQuery = determinationJson?.query;
+    const dataInvoiceList = await sf_connection_util.getUserInfoById(filterQuery);
+    const teamLeaveDataString = JSON.stringify(dataInvoiceList);
 
     return {
-      deterministic: {
-        role: 'assistant',
-        content: `${header}${blocks.join('\n\n')}\n\n${footer}`.trim(),
-        additionalContents: []
-      }
+      prompt: basePrompt + ` \`\`${teamLeaveDataString}\`\` \n`
+      // no deterministic response → RAG will run
     };
   },
 
-  // ---------------------------------------------------------------------------
-  // DOWNLOAD INVOICE (same logic you had; deterministic)
-  // ---------------------------------------------------------------------------
-  'download-invoice': async ({ determinationJson, user_query }) => {
+  // 2) DOWNLOAD INVOICE
+  'download-invoice': async ({ determinationJson, user_query, basePrompt }) => {
     const inferredInvoiceDigits = extractInvoiceNumberFromText(user_query);
     const inferredInvoiceNumber = normalizeInvoiceNumber(inferredInvoiceDigits);
-    const classifierInvoiceNumber = normalizeInvoiceNumber(determinationJson?.invoiceNumber);
+    const classifierInvoiceNumber = normalizeInvoiceNumber(
+      determinationJson?.invoiceNumber
+    );
 
-    const invoiceNumber = inferredInvoiceNumber || classifierInvoiceNumber || '';
+    let invoiceNumber = '';
+    if (inferredInvoiceNumber) {
+      invoiceNumber = inferredInvoiceNumber;
+    } else if (classifierInvoiceNumber) {
+      invoiceNumber = classifierInvoiceNumber;
+    }
 
     let EStatus = '';
     let EStatusMessage = '';
     let downloadUrl = '';
 
     if (invoiceNumber) {
-      const precheck = await sf_connection_util.validateInvoiceAvailability(invoiceNumber);
-      EStatus = precheck?.status || '';
-      EStatusMessage = precheck?.message || '';
+      const precheckResponse =
+        await sf_connection_util.validateInvoiceAvailability(invoiceNumber);
+      console.log(
+        'STE-GPT-INFO validateInvoiceAvailability precheck',
+        JSON.stringify(precheckResponse)
+      );
+      EStatus = precheckResponse?.status || '';
+      EStatusMessage = precheckResponse?.message || '';
       if (EStatus === 'S') {
-        const dl = await sf_connection_util.getDownloadlink(invoiceNumber);
-        downloadUrl = dl?.downloadUrl || dl?.url || '';
+        const downloadLinkResponse =
+          await sf_connection_util.getDownloadlink(invoiceNumber);
+        downloadUrl =
+          downloadLinkResponse?.downloadUrl ||
+          downloadLinkResponse?.url ||
+          '';
       }
     }
 
+    const downloadContext = { invoiceNumber, downloadUrl, EStatus, EStatusMessage };
+    console.log('STE-GPT-INFO download-invoice context', {
+      query: user_query,
+      invoiceNumber,
+      EStatus,
+      hasDownloadUrl: Boolean(downloadUrl)
+    });
+
+    // build deterministic answer if possible
+    let deterministic = null;
     if (!invoiceNumber) {
-      return { deterministic: { role: 'assistant', content: 'Kindly provide the invoice number required for the download.', additionalContents: [] } };
-    }
-    if (EStatus === 'E') {
-      return { deterministic: { role: 'assistant', content: EStatusMessage || 'Invoice not found.', additionalContents: [] } };
-    }
-    if (EStatus === 'S' && downloadUrl) {
-      return { deterministic: { role: 'assistant', content: `<href>${invoiceNumber}</href>\n\n<href-value>${downloadUrl}</href-value>`, additionalContents: [] } };
+      deterministic = {
+        role: 'assistant',
+        content: 'Kindly provide the invoice number required for the download.',
+        additionalContents: []
+      };
+    } else if (EStatus === 'E') {
+      deterministic = {
+        role: 'assistant',
+        content: EStatusMessage || 'Invoice not found.',
+        additionalContents: []
+      };
+    } else if (EStatus === 'S' && downloadUrl) {
+      deterministic = {
+        role: 'assistant',
+        content: `<href>${invoiceNumber}</href>\n\n<href-value>${downloadUrl}</href-value>`,
+        additionalContents: []
+      };
+    } else {
+      deterministic = {
+        role: 'assistant',
+        content:
+          'Invoice download service is temporarily unavailable. Please try again in a few minutes.',
+        additionalContents: []
+      };
     }
 
-    return { deterministic: { role: 'assistant', content: 'Invoice download service is temporarily unavailable. Please try again in a few minutes.', additionalContents: [] } };
+    return {
+      prompt: basePrompt + ` \`\`${JSON.stringify(downloadContext)}\`\` \n`,
+      deterministic
+    };
   },
 
-  // ---------------------------------------------------------------------------
-  // SOA (keep as-is)
-  // ---------------------------------------------------------------------------
-  'soa-request': async ({ determinationJson }) => {
-    const companyCode = determinationJson?.companyCode ? `${determinationJson.companyCode}`.trim() : '';
-    const customerCode = determinationJson?.customerCode ? `${determinationJson.customerCode}`.trim() : '';
-    const asOfDate = determinationJson?.asOfDate ? `${determinationJson.asOfDate}`.trim() : '';
+  // 3) SOA REQUEST
+  'soa-request': async ({ determinationJson, basePrompt }) => {
+    const companyCode = determinationJson?.companyCode
+      ? `${determinationJson.companyCode}`.trim()
+      : '';
+    const customerCode = determinationJson?.customerCode
+      ? `${determinationJson.customerCode}`.trim()
+      : '';
+    const asOfDate = determinationJson?.asOfDate
+      ? `${determinationJson.asOfDate}`.trim()
+      : '';
 
     let downloadUrl = '';
     let formattedDate = '';
@@ -1096,225 +443,188 @@ state.intentLocked = true;
     let EStatusMessage = '';
 
     if (companyCode && customerCode && asOfDate) {
-      const pre = await sf_connection_util.validateStatementOfAccount(companyCode, customerCode, asOfDate);
-      formattedDate = pre?.formattedDate || '';
-      EStatus = pre?.status || '';
-      EStatusMessage = pre?.message || '';
+      const precheckResponse = await sf_connection_util.validateStatementOfAccount(
+        companyCode,
+        customerCode,
+        asOfDate
+      );
+      formattedDate = precheckResponse?.formattedDate || '';
+      EStatus = precheckResponse?.status || '';
+      EStatusMessage = precheckResponse?.message || '';
 
       if (EStatus === 'S') {
-        const link = await sf_connection_util.getStatementOfAccountLink(companyCode, customerCode, asOfDate);
-        formattedDate = link?.formattedDate || formattedDate;
-        downloadUrl = link?.downloadUrl || '';
+        const soaLinkResponse =
+          await sf_connection_util.getStatementOfAccountLink(
+            companyCode,
+            customerCode,
+            asOfDate
+          );
+        formattedDate = soaLinkResponse?.formattedDate || formattedDate;
+        downloadUrl = soaLinkResponse?.downloadUrl || '';
       }
     }
 
-    if (!companyCode || !customerCode || !asOfDate || !formattedDate) {
-      return { deterministic: { role: 'assistant', content: 'Kindly provide Company Code, Customer Code, and As-Of Date to generate the SOA.', additionalContents: [] } };
-    }
+    const soaContext = {
+      companyCode,
+      customerCode,
+      asOfDate,
+      formattedDate,
+      downloadUrl,
+      EStatus,
+      EStatusMessage
+    };
 
-    if (EStatus === 'E') {
-      return { deterministic: { role: 'assistant', content: EStatusMessage || 'Unable to generate SOA at this time.', additionalContents: [] } };
-    }
-
-    if (EStatus === 'S' && downloadUrl) {
-      return { deterministic: { role: 'assistant', content: `<href>StatementOfAccount</href>\n\n<href-value>${downloadUrl}</href-value>`, additionalContents: [] } };
-    }
-
-    return { deterministic: { role: 'assistant', content: 'SOA service is temporarily unavailable. Please try again later.', additionalContents: [] } };
+    return {
+      prompt: basePrompt + ` \`\`${JSON.stringify(soaContext)}\`\` \n`
+    };
   },
 
-  // ---------------------------------------------------------------------------
-  // CUSTOMER ANALYTICS (safe deterministic summary)
-  // ---------------------------------------------------------------------------
-  'customer-analytics': async ({ determinationJson, user_query }) => {
+  // 4) CUSTOMER ANALYTICS
+  'customer-analytics': async ({ determinationJson, user_query, basePrompt }) => {
     const analyticsQuery = determinationJson?.analyticsQuery || user_query;
+
+    let analyticsContext;
     try {
-      const res = await sf_connection_util.getCustomerDataFromDatasphere(analyticsQuery);
-      const highlights = res?.analysis?.customerHighlights || [];
-      if (!highlights.length) {
-        return { deterministic: { role: 'assistant', content: 'No customer analytics data was returned. Please refine your question (client, period, metric).', additionalContents: [] } };
-      }
-      return { deterministic: { role: 'assistant', content: `Customer analytics summary:\n${highlights.join('\n')}`, additionalContents: [] } };
-    } catch (e) {
-      return { deterministic: { role: 'assistant', content: 'Unable to retrieve customer analytics at this time. Please try again later.', additionalContents: [] } };
+      const customerAnalyticsResult =
+        await sf_connection_util.getCustomerDataFromDatasphere(analyticsQuery);
+      console.log(
+        'STE-GPT-INFO customer analytics response ' +
+        JSON.stringify(customerAnalyticsResult)
+      );
+      analyticsContext = {
+        analyticsQuery,
+        serviceResponse: customerAnalyticsResult?.data,
+        serviceUrl: customerAnalyticsResult?.formattedURL,
+        appliedParameters: customerAnalyticsResult?.appliedParameters,
+        analysis: customerAnalyticsResult?.analysis
+      };
+    } catch (error) {
+      console.error('STE-GPT-ERROR customer analytics service call', error);
+      analyticsContext = {
+        analyticsQuery,
+        serviceResponse: [],
+        serviceUrl: '',
+        appliedParameters: {},
+        analysis: {
+          summary: '',
+          scopeDescription: '',
+          rankingDescription: '',
+          rankingType: '',
+          orderDirection: '',
+          limit: 0,
+          clientFilter: '',
+          limitProvided: false,
+          customerInsights: [],
+          customerHighlights: []
+        }
+      };
     }
+
+    return {
+      prompt: basePrompt + ` \`\`${JSON.stringify(analyticsContext)}\`\` \n`
+    };
   }
 };
+
 // -----------------------------------------------------------------------------
-// SAFE Classification Wrapper (prevents 502 when AI_ENGINE returns non-JSON)
+// Helper: send usage log to AI engine
 // -----------------------------------------------------------------------------
-function localFallbackClassify(user_query = '') {
-  const q = String(user_query || '').toLowerCase();
-
-  // keep conservative fallbacks
-  if (q.includes('statement of account') || /\bsoa\b/.test(q)) {
-    return { category: 'soa-request', determinationJson: '{}' };
-  }
-  if (q.includes('download') || q.includes('pdf')) {
-    return { category: 'download-invoice', determinationJson: '{}' };
-  }
-  if (q.includes('invoice') || q.includes('invoices') || q.includes('open items')) {
-    return { category: 'invoice-request-query', determinationJson: '{}' };
-  }
-  if (q.includes('top') || q.includes('analytics') || q.includes('payment days')) {
-    return { category: 'customer-analytics', determinationJson: '{}' };
-  }
-
-  return { category: 'generic-query', determinationJson: '{}' };
-}
-
-// Adds strict JSON contract WITHOUT forcing you to change your big systemPrompt
-function buildStrictSystemPrompt(basePrompt) {
-  const strictSuffix = `
-IMPORTANT:
-- Respond with ONLY valid JSON (no markdown, no explanation).
-- Output must be a single JSON object with:
-  { "category": "<one of: invoice-request-query|download-invoice|customer-analytics|soa-request|generic-query>", "determinationJson": "<stringified JSON>" }
-- determinationJson MUST be a JSON STRING (e.g. "{}" or "{\\"companyCode\\":\\"801\\"}").
-
-If unsure, return:
-{ "category": "generic-query", "determinationJson": "{}" }
-`.trim();
-
-  return `${basePrompt}\n\n${strictSuffix}`;
-}
-
-async function safeClassifyUserQuery(req, aiEngine, user_query, systemPrompt) {
-  const strictPrompt = buildStrictSystemPrompt(systemPrompt);
-
-  try {
-    const classifyResult = await aiEngine.tx(req).send({
-      method: 'POST',
-      path: '/classifyUserQuery',
-      data: { user_query, systemPrompt: strictPrompt }
-    });
-
-    // Validate minimal structure
-    const category = classifyResult?.category;
-    const detStr = classifyResult?.determinationJson;
-
-    // determinationJson must be parseable JSON string (or at least a string)
-    if (!category || typeof detStr !== 'string') {
-      console.warn('STE-GPT-WARN classifyUserQuery invalid shape, fallback', {
-        categoryType: typeof category,
-        detType: typeof detStr
-      });
-      return localFallbackClassify(user_query);
-    }
-
-    // Ensure determinationJson is valid JSON (string)
-    try {
-      JSON.parse(detStr || '{}');
-    } catch (e) {
-      console.warn('STE-GPT-WARN classifyUserQuery returned non-JSON determinationJson, fallback', {
-        detPreview: String(detStr).slice(0, 200)
-      });
-      return localFallbackClassify(user_query);
-    }
-
-    return { category, determinationJson: detStr };
-  } catch (e) {
-    console.warn('STE-GPT-WARN classifyUserQuery call failed, fallback', e?.message || e);
-    return localFallbackClassify(user_query);
-  }
-}
 
 
 // ---------------------- CAP SERVICE ----------------------
+// ---------------------- CAP SERVICE ----------------------
 module.exports = function () {
+  /**
+   * Main chat action called from UI
+   */
   this.on('getChatRagResponse', async (req) => {
     const startTime = Date.now();
 
     try {
-      const { conversationId, messageId, message_time, user_id, user_query } = req.data;
-
-      // 1) CLASSIFICATION (AI_ENGINE)
-      
-
-  const aiEngine = await cds.connect.to('AI_ENGINE');
-
-const safe = await safeClassifyUserQuery(req, aiEngine, user_query, systemPrompt);
-let category = safe.category; // <-- CHANGED const -> let
-
-let determinationJson = {};
-try {
-  determinationJson = JSON.parse(safe.determinationJson || '{}');
-} catch (e) {
-  determinationJson = {};
-}
-
-// NEW: clean stale sessions + apply Intent Lock follow-up routing
-cleanupInvoiceSessions();
-const existingInvoiceState = invoiceSessionState.get(conversationId) || null;
-
-if (shouldRouteToInvoiceFollowUp({
-  existingState: existingInvoiceState,
-  user_query,
-  classifiedCategory: category
-})) {
-  console.log('STE-GPT-ROUTER forcing invoice-request-query due to active invoice session', {
-    conversationId,
-    previousCategory: category,
-    userQueryPreview: String(user_query || '').slice(0, 80)
-  });
-  category = 'invoice-request-query';
-  // determinationJson can stay {}, invoice handler will use session + deltas extractor
-}
-
-
-      console.log('STE-GPT-CLASSIFY', {
+      const {
         conversationId,
-        query: String(user_query || '').substring(0, 160),
-        category,
-        determinationJson
+        messageId,
+        message_time,
+        user_id,
+        user_query,
+        appId
+      } = req.data;
+
+      // 1) CLASSIFICATION – REMOTE via AI Engine destination
+      const aiEngine = await cds.connect.to('AI_ENGINE');
+
+      const classifyResult = await aiEngine.tx(req).send({
+        method: 'POST',
+        path: '/classifyUserQuery',
+        data: {
+          user_query,
+          systemPrompt
+        }
+      });
+
+      const category = classifyResult?.category;
+      const determinationJson = JSON.parse(
+        classifyResult?.determinationJson || '{}'
+      );
+
+      console.log('AI ENGINE Classification', {
+        query: user_query,
+        classification: determinationJson
       });
 
       if (!basePrompts[category]) {
-        return {
-          role: 'assistant',
-          content: 'I could not classify your request. Please rephrase.',
-          messageTime: new Date().toISOString(),
-          messageId: messageId || null,
-          additionalContents: JSON.stringify([])
-        };
+        throw new Error(`${category} is not in the supported categories`);
       }
 
-      // 2) Deterministic handlers first
+      // 2) Run project-specific category handler
+      const promptResponses = { ...basePrompts };
+      let deterministicResponse = null;
+
       if (categoryHandlers[category]) {
-        const handled = await categoryHandlers[category]({
-          req,
-          conversationId,
-          messageId,
-          message_time,
-          user_id,
-          user_query,
-          determinationJson
-        });
+        const { prompt, deterministic } =
+          (await categoryHandlers[category]({
+            determinationJson,
+            user_query,
+            basePrompt: promptResponses[category]
+          })) || {};
 
-        if (handled?.deterministic) {
-          await logUsageToAiEngine(req, {
-            category,
-            startTime,
-            isDeterministic: true,
-            conversationId,
-            messageId,
-            userId: user_id
-          });
-
-          return {
-            role: handled.deterministic.role,
-            content: handled.deterministic.content,
-            messageTime: new Date().toISOString(),
-            messageId: messageId || null,
-            additionalContents: JSON.stringify(handled.deterministic.additionalContents || [])
-          };
+        if (prompt) {
+          promptResponses[category] = prompt;
+        }
+        if (deterministic) {
+          deterministicResponse = deterministic;
         }
       }
 
-      // 3) Otherwise do your existing RAG flow
+      // 3) If deterministic (download, etc.) → no RAG call
+      if (deterministicResponse) {
+        const responseTimestamp = new Date().toISOString();
+
+        // Log usage in AI engine
+        await logUsageToAiEngine(req, {
+          category,
+          startTime,
+          isDeterministic: true,
+          conversationId,
+          messageId,
+          userId: user_id
+        });
+
+        return {
+          role: deterministicResponse.role,
+          content: deterministicResponse.content,
+          messageTime: responseTimestamp,
+          messageId: messageId || null,
+          additionalContents: JSON.stringify(
+            deterministicResponse.additionalContents || []
+          )
+        };
+      }
+
+      // 4) RAG via AI ENGINE (remote CAP app via destination)
       const ragResult = await aiEngine.tx(req).send({
         method: 'POST',
-        path: '/ragWithSdk',
+        path: '/ragWithSdk', // exposed by AI engine CAP project
         data: {
           conversationId,
           messageId,
@@ -1325,33 +635,57 @@ if (shouldRouteToInvoiceFollowUp({
           tableName,
           embeddingColumn,
           contentColumn,
-          prompt: basePrompts[category],
+          // category-specific prompt
+          prompt: promptResponses[category],
           topK: 30
         }
       });
 
+
+      // Normalize completion & additionalContents
       let completionObj;
       if (typeof ragResult?.completion === 'string') {
         try {
           completionObj = JSON.parse(ragResult.completion);
-        } catch {
-          completionObj = { role: 'assistant', content: ragResult?.completion || '' };
+        } catch (e) {
+          console.warn(
+            'RAG completion is not valid JSON string, using fallback.',
+            ragResult.completion
+          );
+          completionObj = {
+            role: 'assistant',
+            content: ragResult?.completion || ''
+          };
         }
+      } else if (ragResult?.completion) {
+        completionObj = ragResult.completion;
       } else {
-        completionObj = ragResult?.completion || { role: 'assistant', content: ragResult?.content || '' };
+        completionObj = {
+          role: 'assistant',
+          content:
+            ragResult?.content ||
+            'I was unable to generate a response at this time. Please try again.'
+        };
       }
 
-      let additionalContentsArr = [];
+      let additionalContentsArr;
       if (typeof ragResult?.additionalContents === 'string') {
         try {
           additionalContentsArr = JSON.parse(ragResult.additionalContents);
-        } catch {
+        } catch (e) {
+          console.warn(
+            'RAG additionalContents is not valid JSON string, defaulting to [].',
+            ragResult.additionalContents
+          );
           additionalContentsArr = [];
         }
       } else {
         additionalContentsArr = ragResult?.additionalContents || [];
       }
 
+      const responseTimestamp = new Date().toISOString();
+
+      // Log usage in AI engine
       await logUsageToAiEngine(req, {
         category,
         startTime,
@@ -1361,15 +695,17 @@ if (shouldRouteToInvoiceFollowUp({
         userId: user_id
       });
 
+      // Return flat, primitive-only structure for CDS/OData V4
       return {
         role: completionObj.role,
         content: completionObj.content,
-        messageTime: new Date().toISOString(),
+        messageTime: responseTimestamp,
         messageId: messageId || null,
         additionalContents: JSON.stringify(additionalContentsArr)
       };
     } catch (error) {
-      console.error('STE-GPT-ERROR getChatRagResponse', error);
+      console.error('Error while generating response for user query:', error);
+      // Let CAP convert this to a 500 for the UI
       throw error;
     }
   });
@@ -1383,7 +719,7 @@ if (shouldRouteToInvoiceFollowUp({
         method: 'POST',
         path: '/logUsage',
         data: {
-          sourceService: 'HR_APPROVAL',
+          sourceService: 'OTC',
           category,
           isDeterministic,
           durationMs,
@@ -1394,7 +730,7 @@ if (shouldRouteToInvoiceFollowUp({
         }
       });
     } catch (e) {
-      console.warn('STE-GPT-WARN logUsage failed', e?.message || e);
+      console.warn('Failed to log usage to AI engine', e);
     }
   }
 
@@ -1402,14 +738,27 @@ if (shouldRouteToInvoiceFollowUp({
     const aiEngine = await cds.connect.to('AI_ENGINE');
     return aiEngine.tx(req).send({
       method: 'POST',
-      path: '/getConversationHistory',
+      path: '/getConversationHistory', // action on AIEngineService
       data: { conversationId: req.data.conversationId }
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // deleteChatData – delegated to AI engine (central cleanup)
+  // ---------------------------------------------------------------------------
   this.on('deleteChatData', async (req) => {
-    const aiEngine = await cds.connect.to('AI_ENGINE');
-    await aiEngine.tx(req).send({ method: 'POST', path: '/deleteAllChatData' });
-    return 'Success!';
+    try {
+      const aiEngine = await cds.connect.to('AI_ENGINE');
+
+      await aiEngine.tx(req).send({
+        method: 'POST',
+        path: '/deleteAllChatData'
+      });
+
+      return 'Success!';
+    } catch (error) {
+      console.log('Error while deleting the chat content in AI engine:', error);
+      throw error;
+    }
   });
 };
