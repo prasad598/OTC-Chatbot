@@ -183,34 +183,101 @@ function parseLegacyInvoiceQuery(filterQuery) {
   return result;
 }
 
-function buildOtcInvoiceUrl({
-  AccountingDocument,
-  FiscalYear,
-  CompanyCode,
-  DateFrom,
-  DateTo,
-  OpenItem,
-  top,
-  skip,
-  count
-}) {
-  const params = [];
+function isNonEmpty(v) {
+  return typeof v === 'string' ? v.trim() !== '' : v !== undefined && v !== null;
+}
 
-  if (AccountingDocument) params.push(`AccountingDocument=${encodeURIComponent(AccountingDocument)}`);
-  if (FiscalYear) params.push(`FiscalYear=${encodeURIComponent(FiscalYear)}`);
-  if (CompanyCode) params.push(`CompanyCode=${encodeURIComponent(CompanyCode)}`);
-  if (DateFrom) params.push(`DateFrom=${encodeURIComponent(DateFrom)}`);
-  if (DateTo) params.push(`DateTo=${encodeURIComponent(DateTo)}`);
+function isValidDocNo(v) {
+  if (!isNonEmpty(v)) return false;
+  const s = String(v).trim();
+  if (/^(19|20)\d{2}$/.test(s)) return false;
+  return /^\d{6,20}$/.test(s);
+}
 
-  params.push(`ISystemAlias=${encodeURIComponent(OTC_SYSTEM_ALIAS)}`);
+function buildInvoiceUrl(state = {}) {
+  const {
+    AccountingDocument,
+    InvoiceNo,
+    FiscalYear,
+    CompanyCode,
+    DateFrom,
+    DateTo,
+    OpenItem,
+    ISystemAlias,
+    top,
+    skip,
+    count
+  } = state;
 
-  if (OpenItem) params.push(`OpenItem=${encodeURIComponent(OpenItem)}`);
-  if (count) params.push(`count=X`);
+  const params = new URLSearchParams();
+  const includedFields = [];
+  const excludedFields = [];
 
-  if (Number.isFinite(top)) params.push(`top=${encodeURIComponent(String(top))}`);
-  if (Number.isFinite(skip)) params.push(`skip=${encodeURIComponent(String(skip))}`);
+  const addField = (key, value, validator = isNonEmpty) => {
+    if (validator(value)) {
+      params.set(key, String(value).trim());
+      includedFields.push(key);
+      return true;
+    }
+    excludedFields.push(key);
+    return false;
+  };
 
-  return `/otc/invoice?${params.join('&')}`;
+  const docCandidate = isNonEmpty(AccountingDocument)
+    ? AccountingDocument
+    : InvoiceNo;
+  const hasValidDoc = isValidDocNo(docCandidate);
+  if (hasValidDoc) {
+    addField('AccountingDocument', docCandidate, isValidDocNo);
+  } else if (isNonEmpty(docCandidate)) {
+    excludedFields.push('AccountingDocument');
+  } else {
+    excludedFields.push('AccountingDocument');
+  }
+
+  addField('FiscalYear', FiscalYear);
+  addField('CompanyCode', CompanyCode);
+
+  if (isNonEmpty(DateFrom)) addField('DateFrom', DateFrom);
+  else excludedFields.push('DateFrom');
+
+  if (isNonEmpty(DateTo)) addField('DateTo', DateTo);
+  else excludedFields.push('DateTo');
+
+  if (OpenItem === 'X') addField('OpenItem', OpenItem, (v) => v === 'X');
+  else excludedFields.push('OpenItem');
+
+  addField('ISystemAlias', isNonEmpty(ISystemAlias) ? ISystemAlias : OTC_SYSTEM_ALIAS);
+
+  if (count) {
+    params.set('count', 'X');
+    includedFields.push('count');
+  } else {
+    excludedFields.push('count');
+  }
+
+  if (Number.isFinite(top)) {
+    params.set('top', String(top));
+    includedFields.push('top');
+  } else {
+    excludedFields.push('top');
+  }
+
+  if (Number.isFinite(skip)) {
+    params.set('skip', String(skip));
+    includedFields.push('skip');
+  } else {
+    excludedFields.push('skip');
+  }
+
+  const paramsObject = Object.fromEntries(params.entries());
+  console.log('STE-GPT-INFO buildInvoiceUrl params', {
+    params: paramsObject,
+    includedFields,
+    excludedFields
+  });
+
+  return `/otc/invoice?${params.toString()}`;
 }
 
 /**
@@ -255,7 +322,7 @@ async function getInvoicesFromOtc(filterQuery, userQueryText, options = {}) {
 
   // 1) Count call
   if (wantCount) {
-    countUrl = buildOtcInvoiceUrl({
+    countUrl = buildInvoiceUrl({
       ...parsed,
       count: true,
       top: 0,
@@ -298,7 +365,7 @@ async function getInvoicesFromOtc(filterQuery, userQueryText, options = {}) {
   }
 
   // 2) Paged list call
-  const url = buildOtcInvoiceUrl({
+  const url = buildInvoiceUrl({
     ...parsed,
     count: false,
     top,
@@ -588,6 +655,7 @@ async function validateStatementOfAccount(companyCode, customerCode, asOfDate) {
 }
 
 module.exports = {
+  buildInvoiceUrl,
   getInvoicesFromOtc,
   getCustomerDataFromDatasphere,
   getDownloadlink,
