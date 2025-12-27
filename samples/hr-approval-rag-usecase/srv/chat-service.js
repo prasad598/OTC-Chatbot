@@ -952,7 +952,6 @@ state.intentLocked = true;
 
     // 5) Call OTC: top=5 only, with skip (safe)
     const legacyFilterQuery = buildLegacyFilterQueryFromState(state);
-    const isInvoiceLookup = !!state.accountingDocument;
 
     let apiResult = await sf_connection_util.getInvoicesFromOtc(legacyFilterQuery, user_query, {
       top: PAGE_SIZE,
