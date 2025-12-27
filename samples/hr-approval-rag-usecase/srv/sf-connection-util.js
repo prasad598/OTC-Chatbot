@@ -298,6 +298,7 @@ async function getInvoicesFromOtc(filterQuery, userQueryText, options = {}) {
   const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 30000;
 
   const parsed = parseLegacyInvoiceQuery(filterQuery);
+  const isInvoiceLookup = !!parsed.AccountingDocument;
 
   // If user says "open items", set OpenItem=X
   const userText = (userQueryText || '').toString();
@@ -321,12 +322,10 @@ async function getInvoicesFromOtc(filterQuery, userQueryText, options = {}) {
   let countUrl = '';
 
   // 1) Count call
-  if (wantCount) {
+  if (wantCount && !isInvoiceLookup) {
     countUrl = buildInvoiceUrl({
       ...parsed,
-      count: true,
-      top: 0,
-      skip: 0
+      count: true
     });
 
     try {
@@ -368,8 +367,8 @@ async function getInvoicesFromOtc(filterQuery, userQueryText, options = {}) {
   const url = buildInvoiceUrl({
     ...parsed,
     count: false,
-    top,
-    skip
+    top: isInvoiceLookup ? undefined : top,
+    skip: isInvoiceLookup ? undefined : skip
   });
 
   try {

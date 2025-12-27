@@ -979,7 +979,11 @@ state.intentLocked = true;
     }
 
     const items = Array.isArray(apiResult?.items) ? apiResult.items : [];
-    const totalCount = Number.isFinite(apiResult?.totalCount) ? apiResult.totalCount : items.length;
+    const totalCount = isInvoiceLookup
+      ? items.length
+      : Number.isFinite(apiResult?.totalCount)
+        ? apiResult.totalCount
+        : 0;
     const returnedCount = items.length;
 
     state.totalCount = totalCount;
