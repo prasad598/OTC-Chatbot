@@ -11,7 +11,7 @@ build-parameters:
   before-all:
     - builder: custom
       commands:
-        - npx cds build --production
+        - npx --package @sap/cds-dk cds build --production
 
 modules:
   # --------------------- SERVER MODULE -------------------------
